@@ -1,46 +1,82 @@
 import numpy as np
 import matplotlib.pyplot as plt 
 from utils import *
-
+from utils import R_EARTH, OMEGA_E, MU_EARTH
 # ----------------- Trajectory -----------------
 class Trajectory:
-    def __init__(self, jd_array, R_km, V_km_s, start_time):
-        """
-        jd_array: Julian dates for each state sample
-        R_km, V_km_s: position and velocity in km, km/s
-        start_time: tuple (Y, M, D, h, m, s) of sim start
-        """
-        self.JD = np.array(jd_array, float)   # Julian Date at each sample
-        self.R = np.array(R_km, float)
-        self.V = np.array(V_km_s, float)
-        self.start_time = start_time          # Store launch time
+    """
+    Generic trajectory container:
+      - JD: absolute Julian Dates for each sample (days)
+      - R: ECI position [km], shape (n,3)
+      - V: ECI velocity [km/s], shape (n,3)
+      - start_time: (Y, M, D, h, m, s)
+    """
 
-    def save_npz(self, path):
-        np.savez(path, JD=self.JD, R=self.R, V=self.V, start_time=self.start_time)
+    def __init__(
+        self,
+        jd_array: list[float] | tuple[float, ...] | np.ndarray,
+        R_km: list[list[float]] | np.ndarray,
+        V_km_s: list[list[float]] | np.ndarray,
+        start_time: tuple[int, int, int, int, int, float],
+        name: str | None = None,
+    ) -> None:
+        self.JD = np.array(jd_array, dtype=float)                  # days
+        self.R = np.array(R_km, dtype=float).reshape(-1, 3)        # km
+        self.V = np.array(V_km_s, dtype=float).reshape(-1, 3)      # km/s
+        self.start_time = start_time
+        self.name = name or "trajectory"
 
-    @staticmethod
-    def load_npz(path):
+        if self.JD.shape[0] != self.R.shape[0] or self.R.shape != self.V.shape:
+            raise ValueError("JD, R, V must have same length; R and V must be (n,3).")
+
+    # -------- I/O --------
+    def save_npz(self, path: str) -> None:
+        np.savez(
+            path,
+            JD=self.JD,
+            R=self.R,
+            V=self.V,
+            start_time=np.array(self.start_time, dtype=object),
+            name=np.array(self.name, dtype=object),
+        )
+
+    @classmethod
+    def load_npz(cls, path: str):
         data = np.load(path, allow_pickle=True)
-        return Trajectory(data["JD"], data["R"], data["V"], tuple(data["start_time"]))
+        jd = data["JD"]
+        R = data["R"]
+        V = data["V"]
+        start_time = tuple(data["start_time"])
+        name = str(data.get("name", "trajectory"))
+        return cls(jd, R, V, start_time, name=name)
 
-    def elapsed_hours(self):
-        return (self.JD - self.JD[0]) * 24.0
-    
-    # Simple ECI plots
-    def plot_r_components(self):
+    # -------- time helpers --------
+    def elapsed_days(self) -> np.ndarray:
+        return self.JD - self.JD[0]
+
+    def elapsed_hours(self) -> np.ndarray:
+        return self.elapsed_days() * 24.0
+
+    # -------- plots --------
+    def plot_r_components(self) -> None:
+        t_hr = self.elapsed_hours()
         plt.figure()
-        plt.plot(self.JD/3600.0, self.R[:,0], label='x [km]')
-        plt.plot(self.JD/3600.0, self.R[:,1], label='y [km]')
-        plt.plot(self.JD/3600.0, self.R[:,2], label='z [km]')
-        plt.xlabel('Time [hours]'); plt.ylabel('Position [km]')
-        plt.legend(); plt.title('ECI position vs time'); plt.tight_layout(); plt.show()
+        plt.plot(t_hr, self.R[:, 0], label="x [km]")
+        plt.plot(t_hr, self.R[:, 1], label="y [km]")
+        plt.plot(t_hr, self.R[:, 2], label="z [km]")
+        plt.xlabel("Time [hours]"); plt.ylabel("Position [km]")
+        plt.legend(); plt.title(f"ECI position vs time — {self.name}")
+        plt.tight_layout(); plt.show()
 
-    # Ground track (assumes Earth as rotating sphere, no nutation/precession)
-    def plot_ground_track(self, theta0=0.0):
-        # Rotate ECI to ECEF by Earth rotation theta(t) about z
-        x, y, z = self.R[:,0], self.R[:,1], self.R[:,2]
-        theta = theta0 + OMEGA_E * self.T
+    def plot_ground_track(self, theta0: float = 0.0) -> None:
+        """
+        Approx ground track: ECI -> ECEF by z-rotation with Earth's mean spin.
+        (For high precision, replace with GMST/temporal model.)
+        """
+        x, y, z = self.R[:, 0], self.R[:, 1], self.R[:, 2]
+        theta = theta0 + OMEGA_E * (self.elapsed_days() * 86400.0)
         cos_t, sin_t = np.cos(theta), np.sin(theta)
+
         x_e =  cos_t * x + sin_t * y
         y_e = -sin_t * x + cos_t * y
         z_e =  z
@@ -48,22 +84,25 @@ class Trajectory:
         r_norm = np.linalg.norm(self.R, axis=1)
         lat = np.degrees(np.arcsin(z_e / r_norm))
         lon = np.degrees(np.arctan2(y_e, x_e))
-        # Wrap to [-180, 180]
         lon = (lon + 180.0) % 360.0 - 180.0
 
         plt.figure()
-        plt.plot(lon, lat, '.', ms=1)
-        plt.xlabel('Longitude [deg]'); plt.ylabel('Latitude [deg]')
-        plt.title('Ground track (ECEF from ECI by z-rotation)')
+        plt.plot(lon, lat, ".", ms=1)
+        plt.xlabel("Longitude [deg]"); plt.ylabel("Latitude [deg]")
+        plt.title(f"Ground track (approx) — {self.name}")
         plt.xlim([-180, 180]); plt.ylim([-90, 90])
         plt.grid(True); plt.tight_layout(); plt.show()
 
-    def plot_3d(self, show_earth=True, earth_alpha=0.15, earth_wire=True, wire_steps=24):
+    def plot_3d(
+        self,
+        show_earth: bool = True,
+        earth_alpha: float = 0.15,
+        earth_wire: bool = True,
+        wire_steps: int = 24,
+    ) -> None:
         """
         Plot the ECI trajectory in 3D with an optional Earth sphere.
         """
-        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-
         R = self.R
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
@@ -75,7 +114,7 @@ class Trajectory:
 
         # Optional Earth
         if show_earth:
-            Re = globals().get('R_EARTH', 6378.1363)
+            Re = R_EARTH
             u = np.linspace(0, 2*np.pi, 60)
             v = np.linspace(0, np.pi, 30)
             xs = Re * np.outer(np.cos(u), np.sin(v))
@@ -105,7 +144,16 @@ class Trajectory:
         plt.tight_layout()
         plt.show()
 
-    def animate_3d(self, step=1, interval=30, tail=500, save_path=None, dpi=120, repeat=True, camera_spin=False):
+    def animate_3d(
+        self,
+        step: int = 1,
+        interval: int = 30,
+        tail: int | None = 500,
+        save_path: str | None = None,
+        dpi: int = 120,
+        repeat: bool = True,
+        camera_spin: bool = False,
+    ):
         """
         Animate the ECI trajectory in 3D.
         - step: use every 'step'-th sample to speed up plotting
@@ -115,11 +163,10 @@ class Trajectory:
         - camera_spin: slowly rotate the view while animating
         """
         import matplotlib.animation as animation
-        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
         R = self.R[::step]
         n = R.shape[0]
-        Re = globals().get('R_EARTH', 6378.1363)
+        Re = R_EARTH
 
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
@@ -188,3 +235,35 @@ class Trajectory:
 
         plt.show()
         return ani
+
+class SatelliteTrajectory(Trajectory):
+    """Trajectory for a satellite in ECI coordinates."""
+    def __init__(
+        self,
+        jd_array: list[float] | tuple[float, ...] | np.ndarray,
+        R_km: list[list[float]] | np.ndarray,
+        V_km_s: list[list[float]] | np.ndarray,
+        start_time: tuple[int, int, int, int, int, float],
+        name: str | None = None,
+    ) -> None:
+        super().__init__(jd_array, R_km, V_km_s, start_time, name or "satellite")
+
+class GroundStationTrajectory(Trajectory):
+    """Trajectory for a ground station, optionally with precomputed ENU vectors."""
+    def __init__(
+        self,
+        jd_array: list[float] | tuple[float, ...] | np.ndarray,
+        R_km: list[list[float]] | np.ndarray,
+        V_km_s: list[list[float]] | np.ndarray,
+        start_time: tuple[int, int, int, int, int, float],
+        name: str | None = None,
+        enu_vectors: list[list[float]] | np.ndarray | None = None,
+    ) -> None:
+        super().__init__(jd_array, R_km, V_km_s, start_time, name or "ground_station")
+        self.enu_vectors = None
+        if enu_vectors is not None:
+            self.enu_vectors = np.array(enu_vectors, dtype=float).reshape(-1, 3)
+
+    def has_enu(self) -> bool:
+        """Return True if ENU vectors have been computed and stored."""
+        return self.enu_vectors is not None
