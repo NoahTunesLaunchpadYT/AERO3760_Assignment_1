@@ -1,0 +1,72 @@
+import numpy as np
+
+f = 0.00335 # Flattening factor for Earth
+e = np.sqrt(2 * f - f**2) # Eccentricity of the Earth
+H = 572 # Altitude in metres
+Re = 6378137 # Equatorial radius in metres
+Rp = 6356752.314245 # Polar radius in metres
+
+# Coordinates of the blue mountains
+Long_deg = 150.4644444 # Longitude in degrees
+Lat_deg = -33.61 # Latitude in degrees (geodetic latitude)
+
+# Geodetic latitude
+Lat_rad = Lat_deg * (np.pi / 180) # Convert to radians
+
+# Calculating meridional coordinates
+R_phi = Re / np.sqrt(1 - e**2 * np.sin(Lat_rad)**2) # Radius of curvature in the prime vertical
+R_c = R_phi + H # Radius of curvature at the given altitude
+R_s = (1-f)**2*R_phi + H
+
+xO = R_c * np.cos(Lat_rad)
+zO = R_s * np.sin(Lat_rad)
+
+# Geocentric equatorial coordinates
+X = xO*np.cos(Long_deg * (np.pi / 180)) # Convert longitude to radians
+Y = xO*np.sin(Long_deg * (np.pi / 180)) # Convert longitude to radians
+Z = zO
+
+# Pack into a single array
+geocentric_coordinates = np.array([X, Y, Z])
+
+# Observation date
+Y = 2025
+M = 4
+D = 15
+
+# Observation time
+H = 10
+m = 30
+s = 0
+
+# Julian Date calculation
+J0 = 367*Y - 7*(Y + (M + 9) // 12) // 4 + 275*M // 9 + D + 1721013.5
+UT = H + m / 60 + s / 3600
+JD = J0 + UT / 24
+
+# Time in Julian centuries
+T0 = (J0 - 2451545) / 36526
+
+# Greenwich sidereal time
+# Accounting for the Julian date
+GST = 100.4606184 + 36000.77004 * T0 + 0.000387933 * T0**2 - 2.583*10**(-8) * T0**3
+# Accounting for Universal Time (UT)
+GST = (GST + 360.98564724 * (UT / 24)) % 360
+
+LST = (GST + Long_deg) % 360 # Local Sidereal Time in degrees
+
+# Convert to ECI using LST and geocentric coordinates
+theta = np.radians(GST) # Convert GST to radians
+R = np.array(geocentric_coordinates)
+R_eci = np.array([
+    R[0] * np.cos(theta) - R[1] * np.sin(theta),
+    R[0] * np.sin(theta) + R[1] * np.cos(theta),
+    R[2]
+])
+
+# Print results
+print("Geocentric Coordinates (X, Y, Z):", geocentric_coordinates)
+print("Julian Date (JD):", JD)
+print("Greenwich Sidereal Time (GST):", GST, "degrees")
+print("Local Sidereal Time (LST):", LST, "degrees")
+print("ECI Coordinates (R_eci):", R_eci)
