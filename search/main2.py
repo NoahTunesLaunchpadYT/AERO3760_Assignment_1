@@ -23,25 +23,6 @@ def main():
     opt = VisibilityOptimiser(sim)
 
     print("Optimising visibility for Sydney ground station...")
-    # A compact grid near ~100 trials:
-    # best, all_results = opt.optimize_grid(
-    #     gs_key="Sydney",
-    #     rp_range=(6000, 7500),  # rp in km above Earth radius
-    #     ra_range=(7500, 7500),  # ra in km above Earth radius
-    #     ta_range=(0, 360),      # true anomaly in degrees
-    #     raan_range=(-180, 180), # RAAN in degrees
-    #     inc_range=(30, 90),     # inclination in degrees
-    #     n_rp=10, 
-    #     n_ra=1,      # rp/ra grid (≈ choose 2 = 10 valid pairs when ra>rp)
-    #     n_ta=5,              # 2 true anomalies
-    #     n_raan=5,            # 2 RAAN samples
-    #     n_inc=3,             # 0°, 180° by default (adjust as needed)
-    #     max_orbits=1000,      # cap just in case
-    #     min_elev_deg=0,
-    #     key_prefix="G",
-    #     progress=True,
-    #     verbose=True,
-    # )
 
     # best, all_results = opt.optimize_grid(
     #     gs_key="Sydney",            # your GS key
@@ -58,44 +39,19 @@ def main():
     # )
     # print(best)
 
-
-    # best = {'key': 'custom', 
-    #         'params': {
-    #             'rp_alt_km': 6335.3, 
-    #             'ra_alt_km': 7500, 
-    #             'ta_deg': 213.80, 
-    #             'raan_deg': -38.43, 
-    #             'inc_deg': 90.12, 
-    #             'aop_deg': 54.92}, 
-    #         'percent_visible': 31.98,
-    #         'gs_key': 'Sydney',
-    # }
-
-    # best = {'key': 'custom', 
-    #         'params': {
-    #             'rp_alt_km': 7500, 
-    #             'ra_alt_km': 7500, 
-    #             'ta_deg': 0, 
-    #             'raan_deg': 0, 
-    #             'inc_deg': 33.0, 
-    #             'aop_deg': 90}, 
-    #         'percent_visible': 0,
-    #         'gs_key': 'Sydney',
-    # }
-
-    best = {'key': 'RES0004', 
+    best = {'key': 'custom', 
             'params': {'a_km': 12769.56, 'e': 0.0, 'ta_deg': 144.0, 'raan_deg': 0.0, 'inc_deg': 33.8688, 'aop_deg': 270.0}, 
             'gs_key': 'Sydney',
             'percent_visible': 25.954492865406866}
 
     # opt.create_and_set_best_satellite(best)
-
+    opt.create_and_set_best_satellite(best)
     sim.animate_3d(sat_keys=[best["key"]], step=10, camera_spin=True)
 
     best = opt.refine_2d(steps=100,
                 min_elev_deg=0.0,
                 lr_e = 0.01,   # set True to enforce AOP = RAAN + 90°
-                lr_ta = 0.5,
+                lr_ta = 0.1,
                 seed=123,
                 progress=True,
                 verbose=True,
