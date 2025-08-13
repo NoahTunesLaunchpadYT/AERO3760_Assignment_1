@@ -841,35 +841,25 @@ class Simulator:
                         gs_key: str,
                         sat_key: str,
                         min_elev_deg: float = 0.0,
-                        return_az: bool = False):
+                        return_az: bool = False,
+                        *,
+                        plot: bool = True,
+                        fig_size: tuple[float, float] = (10, 6),
+                        save_plot_path: str | None = None):
         """
         Compute the satellite's elevation at each simulator time step as seen from a
         given ground station, and report the percentage of time it is visible.
 
-        Args:
-            gs_key (str): Key of the ground station in self.ground_station_trajectories.
-            sat_key (str): Key of the satellite in self.satellite_trajectories.
-            min_elev_deg (float): Minimum elevation threshold (degrees) for visibility.
-            return_az (bool): If True, also return azimuth time series (degrees).
+        Also plots (if plot=True) a figure with two subplots sharing the x-axis:
+        - Top: elevation [deg] with the visibility threshold line.
+        - Bottom: visibility mask (0/1) as a step plot.
 
         Returns:
-            tuple:
-                jd (np.ndarray): (n,) Julian Dates used by the simulator.
-                elevation_deg (np.ndarray): (n,) elevation in degrees.
-                visible_mask (np.ndarray): (n,) boolean array where elevation >= min_elev_deg.
-                percent_visible (float): Percentage of samples with elevation >= min_elev_deg,
-                                        in the range [0, 100].
-                azimuth_deg (np.ndarray, optional): (n,) azimuth in degrees; only returned if return_az=True.
-
-        Raises:
-            KeyError: If gs_key or sat_key are not found.
-            ValueError: If the simulator has no JD timebase, or if timebases are mismatched.
-
-        Notes:
-            - Uses the ground station's time-varying ENU basis in ECI that you stored on
-            the GroundStationTrajectory (E_eci, N_eci, U_eci).
-            - Visibility is purely elevation-based (no horizon mask beyond min_elev_deg,
-            no RF link budget, no atmospheric effects).
+            jd (np.ndarray): (n,) Julian Dates used by the simulator.
+            elevation_deg (np.ndarray): (n,) elevation in degrees.
+            visible_mask (np.ndarray): (n,) boolean array where elevation >= min_elev_deg.
+            percent_visible (float): Percentage of samples with elevation >= min_elev_deg, in [0, 100].
+            azimuth_deg (np.ndarray, optional): (n,) azimuth in degrees; only returned if return_az=True.
         """
         import numpy as np
 
@@ -896,11 +886,46 @@ class Simulator:
         # Percentage of visible samples (ignore NaNs if any)
         valid = np.isfinite(el_deg)
         total = int(valid.sum())
-        if total == 0:
-            percent_visible = 0.0
-        else:
-            percent_visible = 100.0 * float((visible_mask & valid).sum()) / float(total)
+        percent_visible = 0.0 if total == 0 else 100.0 * float((visible_mask & valid).sum()) / float(total)
 
+        # -------- Plotting --------
+        if plot:
+            import matplotlib.pyplot as plt
+
+            jd = self.JD
+            y_vis = visible_mask.astype(int)
+
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=fig_size, sharex=True,
+                gridspec_kw={"height_ratios": [3, 1]}
+            )
+
+            # Top: elevation with threshold
+            ax1.plot(jd, el_deg, lw=1.2)
+            ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0)
+            ax1.set_ylabel("Elevation [deg]")
+            ax1.set_title(f"Elevation and Visibility (min elev {min_elev_deg:.1f}°) — {gs_key} vs {sat_key}")
+            ax1.grid(True, alpha=0.3)
+
+            # Bottom: visibility mask (0/1) as step
+            ax2.step(jd, y_vis, where="post")
+            ax2.set_ylim(-0.1, 1.1)
+            ax2.set_yticks([0, 1], labels=["Hidden", "Visible"])
+            ax2.set_xlabel("Julian Date")
+            ax2.set_ylabel("Vis")
+            ax2.grid(True, axis="y", alpha=0.3)
+
+            fig.tight_layout()
+
+            if save_plot_path:
+                try:
+                    fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
+                except Exception as exc:
+                    print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
+
+            plt.show()
+
+        # -------- Returns --------
         if return_az:
             return self.JD.copy(), el_deg.copy(), visible_mask, percent_visible, az_deg.copy()
         else:

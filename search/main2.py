@@ -4,6 +4,7 @@ from GroundStation import GroundStation
 from Simulator import Simulator
 from Propagator import SatellitePropagator, GroundStationPropagator
 from search import grid_search_2d
+from Coverage import cover_circle_with_mask
 
 def main():
     # Propagators
@@ -57,35 +58,13 @@ def main():
     #         'percent_visible': 25.954492865406866}
     # opt.create_and_set_best_satellite(best)
 
+    inc = 47.3684
+
     best = {'key': 'custom', 
-            'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0, 'raan_deg': 0.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
+            'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0, 'raan_deg': 0.0, 'inc_deg': inc, 'aop_deg': 270.0},
             'gs_key': 'Sydney',
             'percent_visible': 25.954492865406866}
     opt.create_and_set_best_satellite(best)
-    
-    best2 = {'key': 'best2', 
-        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144, 'raan_deg': 72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
-        'gs_key': 'Sydney',
-        'percent_visible': 25.954492865406866}
-    opt.create_and_set_best_satellite(best2)
-
-    best3 = {'key': 'best3', 
-        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*2, 'raan_deg': 2*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
-        'gs_key': 'Sydney',
-        'percent_visible': 25.954492865406866}
-    opt.create_and_set_best_satellite(best3)
-
-    best4 = {'key': 'best4', 
-        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*3, 'raan_deg': 3*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
-        'gs_key': 'Sydney',
-        'percent_visible': 25.954492865406866}
-    opt.create_and_set_best_satellite(best4)
-
-    best5 = {'key': 'best5', 
-        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*4, 'raan_deg': 4*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
-        'gs_key': 'Sydney',
-        'percent_visible': 25.954492865406866}
-    opt.create_and_set_best_satellite(best5)
 
     # sim.animate_3d(sat_keys=[best["key"]], step=10, camera_spin=True)
 
@@ -97,8 +76,24 @@ def main():
     #             save_plot_path="optimisation_2d.png"
     #             )
     
-    sim.satellite_trajectories[best["key"]].plot_ground_track()
-    sim.plot_all_four(gs_key="Sydney", sat_keys=[best["key"], best2["key"], best3["key"], best4["key"], best5["key"]], min_elev_deg=0.0)
+    # sim.satellite_trajectories[best["key"]].plot_ground_track()
+    sim.plot_all_four(gs_key="Sydney", sat_keys=[best["key"]], min_elev_deg=0.0)
+    _, _, mask, _ =sim.elevation_series(gs_key="Sydney", sat_key=best["key"], min_elev_deg=0.0)
+    res = cover_circle_with_mask(mask, n=4, require_full=False)
+
+    print("Shifts (deg):", res.shifts_deg)
+    print("Coverage %:", res.coverage_pct, "Covered all:", res.covered_all)
+
+    for i in range(len(res.shifts_deg)):
+        print(f"Shift {i+1}: {res.shifts_deg[i]} degrees")
+        sat_params = best.copy()
+        sat_params['params']['raan_deg'] = res.shifts_deg[i] % 360.0
+        sat_params['params']['ta_deg'] = 108.0 - (res.shifts_deg[i] % 360.0) * 5
+        sat_params['key'] = f"best_{i+1}"
+        print(f"Satellite parameters for shift {i+1}: {sat_params}")
+        opt.create_and_set_best_satellite(sat_params)
+
+    sim.plot_all_four(gs_key="Sydney", sat_keys=[f"best_{i+1}" for i in range(len(res.shifts_deg))], min_elev_deg=0.0)
 
     # # 2) Local refinement (SPSA gradient descent
     # opt.refine_best_local(
