@@ -2,6 +2,9 @@
 import numpy as np
 from tqdm.auto import tqdm
 from Satellite import Satellite
+import matplotlib.pyplot as plt
+from matplotlib.tri import Triangulation
+from matplotlib.colors import Normalize
 
 class VisibilityOptimiser:
     """
@@ -87,42 +90,42 @@ class VisibilityOptimiser:
         self.best = best
 
     def optimize_grid(self,
-                      gs_key: str,
-                      *,
-                      # Fixed geometry (resonant orbit setup)
-                      a_km: float = 12769.56,
-                      raan_deg: float = 0.0,
-                      inc_deg: float | None = None,   # None -> use |GS latitude|
-                      aop_deg: float = 270.0,
-                      # Search variables (ranges & counts)
-                      e_range: tuple[float, float] = (0.0, 0.25),
-                      n_e: int = 16,
-                      ta_range: tuple[float, float] = (0.0, 360.0),
-                      n_ta: int = 48,
-                      # Physical constraint
-                      min_perigee_alt_km: float = 200.0,
-                      # Scoring
-                      min_elev_deg: float = 10.0,
-                      key_prefix: str = "RES",
-                      overwrite_existing: bool = True,
-                      drop_old_trajectories: bool = True,
-                      progress: bool = True,
-                      verbose: bool = True):
+                    gs_key: str,
+                    *,
+                    # Fixed geometry (resonant orbit setup)
+                    a_km: float = 12769.56,
+                    raan_deg: float = 0.0,
+                    inc_deg: float | None = None,   # None -> use |GS latitude|
+                    aop_deg: float = 270.0,
+                    # Search variables (ranges & counts)
+                    e_range: tuple[float, float] = (0.0, 0.25),
+                    n_e: int = 16,
+                    ta_range: tuple[float, float] = (0.0, 360.0),
+                    n_ta: int = 48,
+                    # Physical constraint
+                    min_perigee_alt_km: float = 200.0,
+                    # Scoring
+                    min_elev_deg: float = 10.0,
+                    key_prefix: str = "RES",
+                    overwrite_existing: bool = True,
+                    drop_old_trajectories: bool = True,
+                    progress: bool = True,
+                    verbose: bool = True,
+                    # ----- live 2D scatter of (TA, e) colored by visibility -----
+                    fig_size: tuple[float, float] = (7.5, 6.0),
+                    cmap: str = "viridis",
+                    save_plot_path: str | None = None):
         """
         Grid-search over (e, ta_deg) with a, RAAN, INC, AOP held fixed.
+        Also renders a live 2D scatter of tested points: x=TA [deg], y=e, color=visibility [%].
 
-        Args:
-            gs_key: ground station key present in sim.ground_stations
-            a_km:   semi-major axis (e.g., 12769.56 km for 6:1 resonance)
-            raan_deg: fixed RAAN (deg)
-            inc_deg:  fixed inclination; if None, uses |GS latitude|
-            aop_deg:  fixed argument of perigee (deg), default 270°
-            e_range:  (emin, emax) initial range for eccentricity
-            n_e:      number of e samples (inclusive endpoints)
-            ta_range: (0, 360) by default; if spans full circle, endpoint is excluded
-            n_ta:     number of true anomaly samples
-            min_perigee_alt_km: perigee altitude floor; trims e_max to keep rp >= RE+floor
-            min_elev_deg: visibility elevation mask for scoring
+        Tips:
+        - Set live_plot=False to disable plotting (fastest).
+        - Increase plot_every to reduce UI overhead on large grids.
+        - save_plot_path to save the final figure.
+
+        Returns:
+            best (dict), results (list[dict])
         """
         if self.sim.JD is None:
             raise ValueError("Build the Simulator timebase first (build_timebase).")
@@ -131,16 +134,15 @@ class VisibilityOptimiser:
 
         RE = self._earth_radius_km()
 
-        # Inc: default to |GS latitude| if not provided
+        # Inclination default: |GS latitude|
         if inc_deg is None:
             gs = self.sim.ground_stations[gs_key]
             inc_use = float(abs(getattr(gs, "lat_deg", 0.0)))
         else:
             inc_use = float(inc_deg)
-        # Keep within [0, 180]
         inc_use = max(0.0, min(180.0, inc_use))
 
-        # Enforce perigee floor: e <= 1 - (RE + min_alt)/a
+        # Perigee floor constraint: rp = a(1-e) >= RE + min_alt  => e <= 1 - (RE+min_alt)/a
         e_floor, e_ceil = float(e_range[0]), float(e_range[1])
         e_max_phys = 1.0 - (RE + float(min_perigee_alt_km)) / float(a_km)
         if e_max_phys < 0.0:
@@ -148,9 +150,9 @@ class VisibilityOptimiser:
         e_hi = min(e_ceil, e_max_phys)
         if e_hi < e_floor:
             raise ValueError(f"e_range too high for perigee floor. "
-                             f"Max allowed ≈ {e_max_phys:.4f} for a={a_km} km and floor={min_perigee_alt_km} km.")
+                            f"Max allowed ≈ {e_max_phys:.4f} for a={a_km} km and floor={min_perigee_alt_km} km.")
 
-        # Build grids
+        # Grids
         def _lin(lo, hi, n, angle=False):
             if n <= 0:
                 return np.array([], dtype=float)
@@ -162,19 +164,19 @@ class VisibilityOptimiser:
         ta_grid = _lin(*ta_range, n_ta, angle=True)
 
         # Build trial satellites
+        from Satellite import Satellite
         sats: dict[str, object] = {}
         params_by_key: dict[str, dict] = {}
         keys: list[str] = []
-
         count = 0
         for e in e_grid:
             for ta in ta_grid:
                 key = f"{key_prefix}{count:04d}"
                 sat = Satellite.from_keplerian(a_km=float(a_km), e=float(e),
-                                               inc_deg=inc_use,
-                                               raan_deg=float(raan_deg),
-                                               aop_deg=(float(aop_deg) % 360.0),
-                                               tru_deg=float(ta))
+                                            inc_deg=inc_use,
+                                            raan_deg=float(raan_deg),
+                                            aop_deg=(float(aop_deg) % 360.0),
+                                            tru_deg=float(ta))
                 sats[key] = sat
                 params_by_key[key] = {
                     "a_km": float(a_km),
@@ -191,23 +193,81 @@ class VisibilityOptimiser:
             raise RuntimeError("No orbits generated: check n_e/n_ta and ranges.")
 
         # Add to simulator and propagate all trials + this GS
-        self._add_sats(sats, overwrite=overwrite_existing, drop_old_traj=drop_old_trajectories)
-        # Propagate everyone at once for consistency of JD sampling
-        self.sim.run_all(sat_keys=keys, gs_keys=[gs_key])
+        if hasattr(self, "_add_sats"):
+            self._add_sats(sats, overwrite=overwrite_existing, drop_old_traj=drop_old_trajectories)
+        else:
+            # Fallback if helper isn't present
+            if overwrite_existing:
+                self.sim.satellites.update(sats)
+            else:
+                for k, v in sats.items():
+                    if k not in self.sim.satellites:
+                        self.sim.satellites[k] = v
+            if drop_old_trajectories:
+                for k in keys:
+                    self.sim.satellite_trajectories.pop(k, None)
 
-        # Score visibility (progress bar)
+        self.sim.run_all(sat_keys=keys, gs_keys=[gs_key], progress=progress)
+
+        # ---------- Score & (optionally) update plot ----------
         results = []
         best_key, best_pct = None, -1.0
         iterator = tqdm(keys, desc="Scoring visibility", unit="sat", leave=False) if progress else keys
-        for key in iterator:
+
+        for i, key in enumerate(iterator):
             pct = self._visibility_pct(gs_key, key, min_elev_deg=min_elev_deg)
             rec = {"key": key, "params": params_by_key[key], "percent_visible": float(pct)}
             results.append(rec)
+
             if pct > best_pct:
                 best_pct, best_key = pct, key
                 if progress:
                     iterator.set_postfix_str(f"best={best_pct:.2f}% ({best_key})")
 
+        # Extract sampled points and scores
+        ta = np.array([params_by_key[r["key"]]["ta_deg"] for r in results], dtype=float)
+        e = np.array([params_by_key[r["key"]]["e"] for r in results], dtype=float)
+        z = np.array([r["percent_visible"] for r in results], dtype=float)  # visibility [%]
+
+        # Triangulate irregular (ta, e) samples
+        tri = Triangulation(ta, e)
+
+        fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=fig_size)
+
+        # Labels & title
+        ax.set_xlabel("True anomaly, ta [deg]")
+        ax.set_ylabel("Eccentricity, e")
+        ax.set_zlabel(f"Visibility ≥{min_elev_deg:.0f}° [%]")
+        ax.set_title(f"Grid search (height & colour = visibility ≥{min_elev_deg:.0f}° [%])")
+
+        # Axes limits to match your previous behaviour
+        if (ta_range[1] - ta_range[0]) % 360.0 == 0.0:
+            ax.set_xlim(0, 360)
+        else:
+            ax.set_xlim(float(ta_range[0]), float(ta_range[1]))
+        ax.set_ylim(float(e_floor), float(e_hi))
+
+        # Colour scale tied to visibility
+        norm = Normalize(vmin=float(z.min()), vmax=float(z.max()))
+        surf = ax.plot_trisurf(tri, z, linewidth=0.1, antialiased=True, cmap=cmap, norm=norm)
+
+        # Colourbar
+        cbar = fig.colorbar(surf, ax=ax, pad=0.02, shrink=0.7)
+        cbar.set_label("Visibility [%]")
+
+        fig.tight_layout()
+
+        # Optional save
+        if save_plot_path:
+            try:
+                fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
+            except Exception as exc:
+                print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
+
+        plt.show()
+
+
+        # ---------- Best ----------
         best = next(r for r in results if r["key"] == best_key)
 
         if verbose:
@@ -218,7 +278,6 @@ class VisibilityOptimiser:
                 f"inc={p['inc_deg']:.1f}°, raan={p['raan_deg']:.1f}°, aop={p['aop_deg']:.1f}°"
             )
 
-        # Save "best" on the instance for later reuse
         self.best = {
             "key": best_key,
             "params": best["params"].copy(),
@@ -238,7 +297,8 @@ class VisibilityOptimiser:
                 # SPSA perturbation sizes for (e, ta_deg)
                 delta_e: float = 0.01,
                 delta_ta: float = 1.0,
-                decay: float = 0.97,       # geometric decay of lr and delta
+                decay: float = 0.97,               # geometric decay of lr
+                decay_deltas: bool = True,         # optionally decay deltas too
                 seed: int | None = None,
                 progress: bool = True,
                 verbose: bool = True,
@@ -246,70 +306,72 @@ class VisibilityOptimiser:
                 # --- live plotting / logging ---
                 live_plot: bool = True,
                 plot_every: int = 1,
+                fig_size: tuple[float, float] = (12, 5),
                 log_path: str | None = "visibility_refine2d_log.txt",
-                save_plot_path: str | None = None):
+                save_plot_path: str | None = None,
+                # --- SPSA debug/visualisation ---
+                clip_ta_step_deg: float | None = None,   # e.g. 2.0 caps TA step magnitude
+                show_probes: bool = True,                 # draw plus/minus probe on param-space plot
+                show_step_arrow: bool = True,             # draw the current step segment
+                log_perturbations: bool = True,
+                perturb_log_path: str | None = "visibility_refine2d_perturb.tsv"):
         """
         2-D SPSA refiner over (e, ta_deg) starting from self.best.
 
-        Fixed (taken from self.best['params']): a_km, raan_deg, inc_deg, aop_deg
-        Optimised: e (bounded by perigee floor), ta_deg (wrapped to [0, 360))
+        Fixed (from self.best['params']): a_km, raan_deg, inc_deg, aop_deg
+        Optimised: e  (bounded by perigee floor), ta_deg (wrapped to [0, 360))
 
-        Live outputs:
-        - Interactive plot of visibility % vs. step (current & best)
-        - Tab-separated log file (step, current %, best %, e, ta_deg, fixed params)
+        Live plots:
+        - Left: visibility % vs step (current & best)
+        - Right: path through (ta_deg, e), point color = visibility %
+            + optional dotted line between SPSA probe points, and a short segment
+            showing the applied step.
 
-        Returns:
-        self.best (dict): {"params": {...}, "percent_visible": float, "key": str, "gs_key": str}
+        Logs:
+        - log_path: per-step summary (current %, best %, e, ta, fixed params)
+        - perturb_log_path: rich SPSA info (signs, deltas, probes, vis_plus/minus, gradient, step, new point)
         """
+        # ------------------------- imports -------------------------
         from tqdm.auto import tqdm
         import numpy as np
         import os
         import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
         from Satellite import Satellite
 
-        if not self.best:
+        # ------------------------- checks --------------------------
+        if not getattr(self, "best", None):
             raise RuntimeError("Run optimize_grid(...) first; self.best is not set.")
         gs_key = self.best.get("gs_key")
         if gs_key is None:
             raise RuntimeError("self.best['gs_key'] missing; re-run grid search.")
 
-        # Ensure GS trajectory exists (in case caller didn't just run grid search)
+        # Ensure GS trajectory exists once
         if gs_key not in getattr(self.sim, "ground_station_trajectories", {}):
             if hasattr(self.sim, "propagate_one"):
                 self.sim.propagate_one(gs_key=gs_key)
             else:
                 self.sim.run_all(sat_keys=[], gs_keys=[gs_key], progress=False)
 
-        # Fixed params from best
-        pfix = self.best["params"]
-        a_km     = float(pfix["a_km"])
-        raan_deg = float(pfix["raan_deg"])
-        inc_deg  = float(pfix["inc_deg"])
-        aop_deg  = float(pfix["aop_deg"])
-
-        # Start point (e, ta)
-        e0      = float(pfix["e"])
-        ta0_deg = float(pfix["ta_deg"])
-
-        # Bounds / wrap
-        RE = float(globals().get("R_EARTH", 6378.137))
-        e_max_phys = 1.0 - (RE + float(min_perigee_alt_km)) / a_km
-        if e_max_phys <= 0.0:
-            raise ValueError("a_km too small for the requested perigee floor.")
-
+        # ------------------------- helpers -------------------------
         def _wrap_ta(x_deg: float) -> float:
             return float(x_deg) % 360.0
 
-        def _project(e: float, ta_deg: float) -> tuple[float, float]:
-            e = max(0.0, min(e_max_phys, float(e)))
-            ta_deg = _wrap_ta(ta_deg)
-            return e, ta_deg
+        def _e_max_physical(a_km_: float) -> float:
+            RE_ = float(globals().get("R_EARTH", 6378.137))
+            return 1.0 - (RE_ + float(min_perigee_alt_km)) / float(a_km_)
 
-        # Evaluate a candidate (return visibility %)
-        def _score(e: float, ta_deg: float) -> float:
+        def _project(e_: float, ta_: float, e_max_: float) -> tuple[float, float]:
+            e_ = max(0.05, min(e_max_, float(e_)))
+            ta_ = _wrap_ta(ta_)
+            return e_, ta_
+
+        def _score(a_km_: float, raan_: float, inc_: float, aop_: float,
+                e_: float, ta_: float) -> float:
+            """Build+propagate a temp sat at (e,ta), return visibility %."""
             sat = Satellite.from_keplerian(
-                a_km=a_km, e=e, inc_deg=inc_deg,
-                raan_deg=raan_deg, aop_deg=aop_deg, tru_deg=ta_deg
+                a_km=a_km_, e=e_, inc_deg=inc_,
+                raan_deg=raan_, aop_deg=aop_, tru_deg=ta_
             )
             tmp_key = "_RES_2D_OPT_"
             if hasattr(self.sim, "add_satellites"):
@@ -318,109 +380,225 @@ class VisibilityOptimiser:
                 self.sim.satellites[tmp_key] = sat
                 if hasattr(self.sim, "satellite_trajectories"):
                     self.sim.satellite_trajectories.pop(tmp_key, None)
-
             if hasattr(self.sim, "propagate_one"):
                 self.sim.propagate_one(sat_key=tmp_key)
             else:
                 self.sim.run_all(sat_keys=[tmp_key], gs_keys=[], progress=False)
-
             return float(self._visibility_pct(gs_key, tmp_key, min_elev_deg=min_elev_deg))
 
-        # Init
+        # ------------------------- setup ---------------------------
+        pfix = self.best["params"]
+        a_km     = float(pfix["a_km"])
+        raan_deg = float(pfix["raan_deg"])
+        inc_deg  = float(pfix["inc_deg"])
+        aop_deg  = float(pfix["aop_deg"])
+
+        e        = float(pfix["e"])
+        ta_deg   = float(pfix["ta_deg"])
+
+        e_max = _e_max_physical(a_km)
+        if e_max <= 0.0:
+            raise ValueError("a_km too small for the requested perigee floor.")
+
+        # Project start and baseline score
+        e, ta_deg = _project(e, ta_deg, e_max)
+        score_fn = lambda ee, tt: _score(a_km, raan_deg, inc_deg, aop_deg, * _project(ee, tt, e_max))
+
         rng = np.random.default_rng(seed)
-        e, ta_deg = _project(e0, ta0_deg)
         best_e, best_ta = e, ta_deg
-        best_pct = _score(e, ta_deg)
+        best_pct = score_fn(e, ta_deg)
 
-        # Live logging
-        f_log = None
-        try:
-            if log_path:
-                f_log = open(log_path, "w", encoding="utf-8")
-                f_log.write("# step\tpct_now\tbest_pct\te\tta_deg\ta_km\traan_deg\tinc_deg\taop_deg\n")
-                f_log.flush()
-        except Exception as exc:
-            print(f"[warn] could not open log file '{log_path}': {exc}")
-            f_log = None
+        # ------------------------- logging -------------------------
+        def _open_tsv(path: str | None, header: str):
+            if not path: return None
+            try:
+                f = open(path, "w", encoding="utf-8")
+                f.write(header + "\n"); f.flush()
+                return f
+            except Exception as exc:
+                print(f"[warn] could not open log file '{path}': {exc}")
+                return None
 
-        # Live plotting
+        # Per-step summary log
+        f_log = _open_tsv(
+            log_path,
+            "# step\tpct_now\tbest_pct\te\tta_deg\ta_km\traan_deg\tinc_deg\taop_deg"
+        )
+
+        # Rich SPSA perturbation log (one row per iter)
+        f_pert = None
+        if log_perturbations:
+            f_pert = _open_tsv(
+                perturb_log_path,
+                "# step\ts_e\ts_ta\tde_k\tdta_k\t"
+                "e\tta_deg\te_plus\tta_plus\te_minus\tta_minus\t"
+                "vis_plus\tvis_minus\tgrad_e\tgrad_ta\td_e\td_ta\te_new\tta_new\tvis_now\tbest_pct"
+            )
+
+        def _log_step(step, pct_now):
+            if f_log is None: return
+            try:
+                f_log.write(f"{step}\t{pct_now:.6f}\t{best_pct:.6f}\t"
+                            f"{e:.8f}\t{ta_deg:.6f}\t"
+                            f"{a_km:.3f}\t{raan_deg:.3f}\t{inc_deg:.3f}\t{aop_deg:.3f}\n")
+                f_log.flush(); os.fsync(f_log.fileno())
+            except Exception as exc:
+                print(f"[warn] log write failed at step {step}: {exc}")
+
+        def _log_pert(step, s_e, s_ta, de_k, dta_k,
+                    e0, ta0, e_p, ta_p, e_m, ta_m,
+                    vis_p, vis_m, ge, gta, d_e, d_ta, e1, ta1, vis_now):
+            if f_pert is None: return
+            try:
+                f_pert.write(
+                    f"{step}\t{s_e:+.0f}\t{s_ta:+.0f}\t{de_k:.6f}\t{dta_k:.6f}\t"
+                    f"{e0:.8f}\t{ta0:.6f}\t{e_p:.8f}\t{ta_p:.6f}\t{e_m:.8f}\t{ta_m:.6f}\t"
+                    f"{vis_p:.6f}\t{vis_m:.6f}\t{ge:.6f}\t{gta:.6f}\t"
+                    f"{d_e:.6f}\t{d_ta:.6f}\t{e1:.8f}\t{ta1:.6f}\t{vis_now:.6f}\t{best_pct:.6f}\n"
+                )
+                f_pert.flush(); os.fsync(f_pert.fileno())
+            except Exception as exc:
+                print(f"[warn] perturb log write failed at step {step}: {exc}")
+
+        # ------------------------- plotting ------------------------
         if live_plot:
             plt.ion()
-            fig, ax = plt.subplots()
-            ln_now,  = ax.plot([], [], lw=1.5, label="current %")
-            ln_best, = ax.plot([], [], lw=1.5, label="best %")
-            ax.set_xlabel("Step")
-            ax.set_ylabel(f"Visibility ≥{min_elev_deg:.0f}° [%]")
-            ax.set_title("2D refinement (e, ta)")
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc="lower right")
+            fig, (ax_fit, ax_space) = plt.subplots(1, 2, figsize=fig_size)
+
+            # Fitness
+            ln_now,  = ax_fit.plot([], [], lw=1.5, label="current %")
+            ln_best, = ax_fit.plot([], [], lw=1.5, label="best %")
+            ax_fit.set_xlabel("Step")
+            ax_fit.set_ylabel(f"Visibility ≥{min_elev_deg:.0f}° [%]")
+            ax_fit.set_title("2D refinement: fitness over time")
+            ax_fit.grid(True, alpha=0.3); ax_fit.legend(loc="lower right")
+
+            # Param space
+            ax_space.set_xlabel("True anomaly, ta [deg]")
+            ax_space.set_ylabel("Eccentricity, e")
+            ax_space.set_title("2D parameter space (color = visibility %)")
+            ax_space.set_xlim(0, 360); ax_space.set_ylim(0.0, e_max * 1.02)
+            ax_space.grid(True, alpha=0.3)
+
+            norm = Normalize(vmin=0.0, vmax=max(100.0, best_pct))
+            sc = ax_space.scatter([], [], c=[], s=24, cmap="viridis", norm=norm)
+            path_line, = ax_space.plot([], [], lw=0.9, alpha=0.6)
+            best_marker, = ax_space.plot([best_ta], [best_e], marker="*", ms=10)
+
+            # NEW: probe visuals + step segment (reused each iter; not accumulating)
+            probe_line = None
+            probe_plus_pt = None
+            probe_minus_pt = None
+            step_seg = None
+            if show_probes:
+                probe_line, = ax_space.plot([], [], ":", lw=1.1, alpha=0.35)
+                probe_plus_pt,  = ax_space.plot([], [], "o", ms=4, alpha=0.7)
+                probe_minus_pt, = ax_space.plot([], [], "o", ms=4, alpha=0.7)
+            if show_step_arrow:
+                step_seg, = ax_space.plot([], [], "-", lw=1.2, alpha=0.6)
+
+            # histories
             xs_hist, now_hist, best_hist = [], [], []
-            fig.canvas.draw(); fig.canvas.flush_events()
+            ta_hist, e_hist, vis_hist = [], [], []
+
+            fig.tight_layout(); fig.canvas.draw(); fig.canvas.flush_events()
         else:
             fig = None
             xs_hist, now_hist, best_hist = [], [], []
+            ta_hist, e_hist, vis_hist = [], [], []
+            # dummy placeholders:
+            ax_fit = ln_now = ln_best = ax_space = sc = path_line = best_marker = None
+            probe_line = probe_plus_pt = probe_minus_pt = step_seg = None
 
-        # Schedules
+        # ------------------------- schedules -----------------------
         lr_e_k, lr_ta_k = float(lr_e), float(lr_ta)
         de_k, dta_k     = float(delta_e), float(delta_ta)
 
         iterator = tqdm(range(steps), desc="Refining 2D (SPSA)", unit="step", leave=False) if progress else range(steps)
         for k in iterator:
+            e0, ta0 = e, ta_deg
+
+            # SPSA perturbation signs
             s_e  = rng.choice([-1.0, 1.0])
             s_ta = rng.choice([-1.0, 1.0])
 
-            # Two-sided probe
-            e_p, ta_p = _project(e + de_k * s_e,      ta_deg + dta_k * s_ta)
-            e_m, ta_m = _project(e - de_k * s_e,      ta_deg - dta_k * s_ta)
+            # Two-sided probe (project each)
+            e_p, ta_p = _project(e0 + de_k * s_e,  ta0 + dta_k * s_ta, e_max)
+            e_m, ta_m = _project(e0 - de_k * s_e,  ta0 - dta_k * s_ta, e_max)
 
-            f_plus  = -_score(e_p, ta_p)
-            f_minus = -_score(e_m, ta_m)
+            vis_plus  = score_fn(e_p, ta_p)
+            vis_minus = score_fn(e_m, ta_m)
+            f_plus  = -vis_plus
+            f_minus = -vis_minus
 
-            # Gradient estimate
-            ge  = (f_plus - f_minus) / max(2.0 * de_k * s_e, 1e-12)
-            gta = (f_plus - f_minus) / max(2.0 * dta_k * s_ta, 1e-12)
+            # Proper signed denominators (don’t clamp with max)
+            ge  = (f_plus - f_minus) / (2.0 * de_k  * s_e)
+            gta = (f_plus - f_minus) / (2.0 * dta_k * s_ta)
 
-            # Step
-            e, ta_deg = _project(e - lr_e_k * ge, ta_deg - lr_ta_k * gta)
+            # Step (with optional TA clip)
+            d_e  =  lr_e_k * ge
+            d_ta =  lr_ta_k * gta
+            if clip_ta_step_deg is not None:
+                d_ta = float(np.clip(d_ta, -abs(clip_ta_step_deg), abs(clip_ta_step_deg)))
+
+            e, ta_deg = _project(e0 - d_e, ta0 - d_ta, e_max)
 
             # Evaluate & track best
-            pct_now = _score(e, ta_deg)
-            if pct_now > best_pct:
-                best_pct = pct_now
+            vis_now = score_fn(e, ta_deg)
+            if vis_now > best_pct:
+                best_pct = vis_now
                 best_e, best_ta = e, ta_deg
 
-            # Logging
-            if f_log is not None:
-                try:
-                    f_log.write(f"{k}\t{pct_now:.6f}\t{best_pct:.6f}\t"
-                                f"{e:.8f}\t{ta_deg:.6f}\t"
-                                f"{a_km:.3f}\t{raan_deg:.3f}\t{inc_deg:.3f}\t{aop_deg:.3f}\n")
-                    f_log.flush()
-                    os.fsync(f_log.fileno())
-                except Exception as exc:
-                    print(f"[warn] log write failed at step {k}: {exc}")
+            # --- logging ---
+            _log_step(k, vis_now)
+            _log_pert(k, s_e, s_ta, de_k, dta_k,
+                    e0, ta0, e_p, ta_p, e_m, ta_m,
+                    vis_plus, vis_minus, ge, gta, d_e, d_ta, e, ta_deg, vis_now)
 
-            # Live plot update
-            xs_hist.append(k); now_hist.append(pct_now); best_hist.append(best_pct)
+            # --- histories for plots ---
+            xs_hist.append(k); now_hist.append(vis_now); best_hist.append(best_pct)
+            ta_hist.append(ta_deg); e_hist.append(e); vis_hist.append(vis_now)
+
+            # --- live plot update (throttled) ---
             if live_plot and (k % max(1, plot_every) == 0):
                 try:
+                    # fitness
                     ln_now.set_data(xs_hist, now_hist)
                     ln_best.set_data(xs_hist, best_hist)
-                    ax.relim(); ax.autoscale_view()
+                    ax_fit.relim(); ax_fit.autoscale_view()
+
+                    # scatter + path
+                    import numpy as _np
+                    offs = _np.column_stack([ta_hist, e_hist])
+                    sc.set_offsets(offs)
+                    sc.set_array(_np.array(vis_hist, dtype=float))
+                    sc.set_clim(vmin=min(vis_hist), vmax=max(vis_hist))
+                    path_line.set_data(ta_hist, e_hist)
+                    best_marker.set_data([best_ta], [best_e])
+
+                    # NEW: probes & step segment visuals
+                    if show_probes:
+                        probe_line.set_data([ta_m, ta_p], [e_m, e_p])
+                        probe_plus_pt.set_data([ta_p], [e_p])
+                        probe_minus_pt.set_data([ta_m], [e_m])
+                    if show_step_arrow:
+                        step_seg.set_data([ta0, ta_deg], [e0, e])
+
                     fig.canvas.draw(); fig.canvas.flush_events()
                 except Exception:
                     pass
 
-            # Decay
+            # Decay schedules
             lr_e_k  *= decay
             lr_ta_k *= decay
-            de_k    *= decay
-            dta_k   *= decay
+            if decay_deltas:
+                de_k    *= decay
+                dta_k   *= decay
 
             if progress:
                 iterator.set_postfix_str(f"best={best_pct:.2f}%  e={best_e:.4f} ta={best_ta:.1f}°")
 
-        # Save result
+        # ------------------------- wrap up -------------------------
         self.best = {
             "key": self.best.get("key", "RES-2D-BEST"),
             "params": {
@@ -435,22 +613,21 @@ class VisibilityOptimiser:
             "gs_key": gs_key,
         }
 
-        # Save plot if requested
         if live_plot and save_plot_path:
             try:
                 fig.savefig(save_plot_path, dpi=140, bbox_inches="tight")
             except Exception as exc:
                 print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-
         if live_plot:
             try:
                 plt.ioff(); plt.show(block=False)
             except Exception:
                 pass
 
-        if f_log is not None:
-            try: f_log.close()
-            except Exception: pass
+        for f in (f_log, f_pert):
+            if f is not None:
+                try: f.close()
+                except Exception: pass
 
         if verbose:
             print(f"[2D LOCAL BEST] vis ≥{min_elev_deg:.1f}°: {best_pct:.2f}%  |  "

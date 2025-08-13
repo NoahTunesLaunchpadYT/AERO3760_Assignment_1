@@ -68,13 +68,13 @@ class Trajectory:
         plt.legend(); plt.title(f"ECI position vs time — {self.name}")
         plt.tight_layout(); plt.show()
 
-    def plot_ground_track(self, theta0: float = 0.0) -> None:
+    def plot_ground_track(self, block: bool = False) -> None:
         """
         Approx ground track: ECI -> ECEF by z-rotation with Earth's mean spin.
         (For high precision, replace with GMST/temporal model.)
         """
         x, y, z = self.R[:, 0], self.R[:, 1], self.R[:, 2]
-        theta = theta0 + OMEGA_E * (self.elapsed_days() * 86400.0)
+        theta = gmst_from_jd(self.JD)
         cos_t, sin_t = np.cos(theta), np.sin(theta)
 
         x_e =  cos_t * x + sin_t * y
@@ -91,7 +91,8 @@ class Trajectory:
         plt.xlabel("Longitude [deg]"); plt.ylabel("Latitude [deg]")
         plt.title(f"Ground track (approx) — {self.name}")
         plt.xlim([-180, 180]); plt.ylim([-90, 90])
-        plt.grid(True); plt.tight_layout(); plt.show()
+        plt.grid(True); plt.tight_layout(); 
+        plt.show(block=block)
 
     def plot_3d(
         self,
