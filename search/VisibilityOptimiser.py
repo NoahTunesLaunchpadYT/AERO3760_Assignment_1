@@ -5,6 +5,8 @@ from Satellite import Satellite
 import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 from matplotlib.colors import Normalize
+from search import grid_search_2d
+import uuid
 
 class VisibilityOptimiser:
     """
@@ -89,50 +91,34 @@ class VisibilityOptimiser:
             self.sim.run_all(sat_keys=[key], gs_keys=[best["gs_key"]])
         self.best = best
 
-    def optimize_grid(self,
-                    gs_key: str,
-                    *,
-                    # Fixed geometry (resonant orbit setup)
-                    a_km: float = 12769.56,
-                    raan_deg: float = 0.0,
-                    inc_deg: float | None = None,   # None -> use |GS latitude|
-                    aop_deg: float = 270.0,
-                    # Search variables (ranges & counts)
-                    e_range: tuple[float, float] = (0.0, 0.25),
-                    n_e: int = 16,
-                    ta_range: tuple[float, float] = (0.0, 360.0),
-                    n_ta: int = 48,
-                    # Physical constraint
-                    min_perigee_alt_km: float = 200.0,
-                    # Scoring
-                    min_elev_deg: float = 10.0,
-                    key_prefix: str = "RES",
-                    overwrite_existing: bool = True,
-                    drop_old_trajectories: bool = True,
-                    progress: bool = True,
-                    verbose: bool = True,
-                    # ----- live 2D scatter of (TA, e) colored by visibility -----
-                    fig_size: tuple[float, float] = (7.5, 6.0),
-                    cmap: str = "viridis",
-                    save_plot_path: str | None = None):
+    # ---------- 2) Your specific objective: visibility from (e, ta) ----------
+    def visibility_pct_objective(
+        self,
+        e: float,
+        ta_deg: float,
+        *,
+        gs_key: str,
+        a_km: float = 12769.56,
+        raan_deg: float = 0.0,
+        inc_deg: float | None = None,      # None -> |GS latitude|
+        aop_deg: float = 270.0,
+        min_elev_deg: float = 10.0,
+        min_perigee_alt_km: float = 200.0,
+        key_prefix: str = "RES",
+        overwrite_existing: bool = True,
+        drop_old_trajectories: bool = True,
+    ) -> float:
         """
-        Grid-search over (e, ta_deg) with a, RAAN, INC, AOP held fixed.
-        Also renders a live 2D scatter of tested points: x=TA [deg], y=e, color=visibility [%].
+        Creates a satellite for the given (e, ta), adds it to the sim,
+        propagates, and returns visibility percentage for gs_key at min_elev_deg.
 
-        Tips:
-        - Set live_plot=False to disable plotting (fastest).
-        - Increase plot_every to reduce UI overhead on large grids.
-        - save_plot_path to save the final figure.
-
-        Returns:
-            best (dict), results (list[dict])
+        Note: This evaluates per point. For maximum performance, consider
+        batching (build all sats, run once) if you need huge grids.
         """
         if self.sim.JD is None:
             raise ValueError("Build the Simulator timebase first (build_timebase).")
         if gs_key not in getattr(self.sim, "ground_stations", {}):
             raise KeyError(f"Ground station '{gs_key}' not found in sim.ground_stations")
-
-        RE = self._earth_radius_km()
 
         # Inclination default: |GS latitude|
         if inc_deg is None:
@@ -142,150 +128,45 @@ class VisibilityOptimiser:
             inc_use = float(inc_deg)
         inc_use = max(0.0, min(180.0, inc_use))
 
-        # Perigee floor constraint: rp = a(1-e) >= RE + min_alt  => e <= 1 - (RE+min_alt)/a
-        e_floor, e_ceil = float(e_range[0]), float(e_range[1])
+        # Physical perigee constraint
+        RE = self._earth_radius_km()
         e_max_phys = 1.0 - (RE + float(min_perigee_alt_km)) / float(a_km)
-        if e_max_phys < 0.0:
-            raise ValueError("Chosen a_km & perigee floor are inconsistent (a too small).")
-        e_hi = min(e_ceil, e_max_phys)
-        if e_hi < e_floor:
-            raise ValueError(f"e_range too high for perigee floor. "
-                            f"Max allowed ≈ {e_max_phys:.4f} for a={a_km} km and floor={min_perigee_alt_km} km.")
+        if e < 0.0 or e > e_max_phys:
+            # Return a very poor score if infeasible (keeps the grid search generic)
+            return -1.0
 
-        # Grids
-        def _lin(lo, hi, n, angle=False):
-            if n <= 0:
-                return np.array([], dtype=float)
-            if angle and np.isclose((hi - lo) % 360.0, 0.0):
-                return np.linspace(lo, hi, n, endpoint=False)
-            return np.linspace(lo, hi, n, endpoint=True)
-
-        e_grid  = _lin(e_floor, e_hi, n_e, angle=False)
-        ta_grid = _lin(*ta_range, n_ta, angle=True)
-
-        # Build trial satellites
+        # Build the satellite
         from Satellite import Satellite
-        sats: dict[str, object] = {}
-        params_by_key: dict[str, dict] = {}
-        keys: list[str] = []
-        count = 0
-        for e in e_grid:
-            for ta in ta_grid:
-                key = f"{key_prefix}{count:04d}"
-                sat = Satellite.from_keplerian(a_km=float(a_km), e=float(e),
-                                            inc_deg=inc_use,
-                                            raan_deg=float(raan_deg),
-                                            aop_deg=(float(aop_deg) % 360.0),
-                                            tru_deg=float(ta))
-                sats[key] = sat
-                params_by_key[key] = {
-                    "a_km": float(a_km),
-                    "e": float(e),
-                    "ta_deg": float(ta),
-                    "raan_deg": float(raan_deg),
-                    "inc_deg": float(inc_use),
-                    "aop_deg": float(aop_deg) % 360.0,
-                }
-                keys.append(key)
-                count += 1
+        sat_key = f"{key_prefix}{uuid.uuid4().hex[:8]}"
+        sat = Satellite.from_keplerian(
+            a_km=float(a_km),
+            e=float(e),
+            inc_deg=inc_use,
+            raan_deg=float(raan_deg),
+            aop_deg=(float(aop_deg) % 360.0),
+            tru_deg=float(ta_deg),
+        )
 
-        if count == 0:
-            raise RuntimeError("No orbits generated: check n_e/n_ta and ranges.")
-
-        # Add to simulator and propagate all trials + this GS
+        # Add to sim
         if hasattr(self, "_add_sats"):
-            self._add_sats(sats, overwrite=overwrite_existing, drop_old_traj=drop_old_trajectories)
+            self._add_sats({sat_key: sat}, overwrite=overwrite_existing, drop_old_traj=drop_old_trajectories)
         else:
-            # Fallback if helper isn't present
-            if overwrite_existing:
-                self.sim.satellites.update(sats)
-            else:
-                for k, v in sats.items():
-                    if k not in self.sim.satellites:
-                        self.sim.satellites[k] = v
+            if overwrite_existing or sat_key not in self.sim.satellites:
+                self.sim.satellites[sat_key] = sat
             if drop_old_trajectories:
-                for k in keys:
-                    self.sim.satellite_trajectories.pop(k, None)
+                self.sim.satellite_trajectories.pop(sat_key, None)
 
-        self.sim.run_all(sat_keys=keys, gs_keys=[gs_key], progress=progress)
+        # Propagate this one satellite
+        self.sim.run_all(sat_keys=[sat_key], gs_keys=[gs_key], progress=False)
 
-        # ---------- Score & (optionally) update plot ----------
-        results = []
-        best_key, best_pct = None, -1.0
-        iterator = tqdm(keys, desc="Scoring visibility", unit="sat", leave=False) if progress else keys
+        # Score
+        pct = float(self._visibility_pct(gs_key, sat_key, min_elev_deg=min_elev_deg))
 
-        for i, key in enumerate(iterator):
-            pct = self._visibility_pct(gs_key, key, min_elev_deg=min_elev_deg)
-            rec = {"key": key, "params": params_by_key[key], "percent_visible": float(pct)}
-            results.append(rec)
+        # Optional clean up: keep or remove the sat/trajectory if you like
+        # del self.sim.satellites[sat_key]
+        # self.sim.satellite_trajectories.pop(sat_key, None)
 
-            if pct > best_pct:
-                best_pct, best_key = pct, key
-                if progress:
-                    iterator.set_postfix_str(f"best={best_pct:.2f}% ({best_key})")
-
-        # Extract sampled points and scores
-        ta = np.array([params_by_key[r["key"]]["ta_deg"] for r in results], dtype=float)
-        e = np.array([params_by_key[r["key"]]["e"] for r in results], dtype=float)
-        z = np.array([r["percent_visible"] for r in results], dtype=float)  # visibility [%]
-
-        # Triangulate irregular (ta, e) samples
-        tri = Triangulation(ta, e)
-
-        fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=fig_size)
-
-        # Labels & title
-        ax.set_xlabel("True anomaly, ta [deg]")
-        ax.set_ylabel("Eccentricity, e")
-        ax.set_zlabel(f"Visibility ≥{min_elev_deg:.0f}° [%]")
-        ax.set_title(f"Grid search (height & colour = visibility ≥{min_elev_deg:.0f}° [%])")
-
-        # Axes limits to match your previous behaviour
-        if (ta_range[1] - ta_range[0]) % 360.0 == 0.0:
-            ax.set_xlim(0, 360)
-        else:
-            ax.set_xlim(float(ta_range[0]), float(ta_range[1]))
-        ax.set_ylim(float(e_floor), float(e_hi))
-
-        # Colour scale tied to visibility
-        norm = Normalize(vmin=float(z.min()), vmax=float(z.max()))
-        surf = ax.plot_trisurf(tri, z, linewidth=0.1, antialiased=True, cmap=cmap, norm=norm)
-
-        # Colourbar
-        cbar = fig.colorbar(surf, ax=ax, pad=0.02, shrink=0.7)
-        cbar.set_label("Visibility [%]")
-
-        fig.tight_layout()
-
-        # Optional save
-        if save_plot_path:
-            try:
-                fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
-            except Exception as exc:
-                print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-
-        plt.show()
-
-
-        # ---------- Best ----------
-        best = next(r for r in results if r["key"] == best_key)
-
-        if verbose:
-            p = best["params"]
-            print(
-                f"[BEST] {best_key}  vis ≥{min_elev_deg:.1f}°: {best['percent_visible']:.2f}%  |  "
-                f"a={p['a_km']:.2f} km, e={p['e']:.4f}, ta={p['ta_deg']:.1f}°, "
-                f"inc={p['inc_deg']:.1f}°, raan={p['raan_deg']:.1f}°, aop={p['aop_deg']:.1f}°"
-            )
-
-        self.best = {
-            "key": best_key,
-            "params": best["params"].copy(),
-            "percent_visible": float(best["percent_visible"]),
-            "gs_key": gs_key,
-        }
-
-        return best, results
+        return pct
 
     def refine_2d(self,
                 *,

@@ -3,6 +3,7 @@ from Satellite import Satellite
 from GroundStation import GroundStation
 from Simulator import Simulator
 from Propagator import SatellitePropagator, GroundStationPropagator
+from search import grid_search_2d
 
 def main():
     # Propagators
@@ -24,27 +25,67 @@ def main():
 
     # print("Optimising visibility for Sydney ground station...")
 
-    # best, all_results = opt.optimize_grid(
-    #     gs_key="Sydney",            # your GS key
-    #     a_km=14450, # 14450.0 # 12769.56
-    #     raan_deg=0.0,
-    #     aop_deg=270.0,
-    #     inc_deg=None,                # None -> |GS latitude|
-    #     e_range=(0.0, 0.3), n_e=5,
-    #     ta_range=(0.0, 360.0), n_ta=10,
-    #     min_perigee_alt_km=500.0,
-    #     min_elev_deg=0.0,
-    #     key_prefix="RES",
-    #     verbose=True,
-    #     save_plot_path="optimisation_grid.png",
+    # def f(inc_deg, ta_deg):
+    #     return opt.visibility_pct_objective(
+    #         e=0.0,
+    #         ta_deg=ta_deg,
+    #         gs_key="Sydney",
+    #         a_km=14450,
+    #         raan_deg=72.0,
+    #         inc_deg=inc_deg,
+    #         aop_deg=270.0,
+    #         min_elev_deg=40.0,
+    #         min_perigee_alt_km=500.0
+    #     )
+    
+    # best_rec, _, _ = grid_search_2d(
+    #     func=f,
+    #     x_range=(0.0, 180.0), n_x=20, x_is_angle=True,
+    #     y_range=(0.0, 360.0), n_y=20, y_is_angle=True,
+    #     return_figure=True,
+    #     x_label="Inclination Angle (inc)",
+    #     y_label="True Anomaly (ta)",
+    #     z_label="Visibility Percentage",
+    #     title="Visibility Percentage vs Inclination and True Anomaly",
     # )
-    # print(best)
+
+    # print(best_rec)
+
+    # best = {'key': 'custom', 
+    #         'params': {'a_km': 14450.0, 'e': 0, 'ta_deg': best_rec["y"], 'raan_deg': 0.0, 'inc_deg': best_rec["x"], 'aop_deg': 270.0},
+    #         'gs_key': 'Sydney',
+    #         'percent_visible': 25.954492865406866}
+    # opt.create_and_set_best_satellite(best)
 
     best = {'key': 'custom', 
-            'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 288.0, 'raan_deg': 0.0, 'inc_deg': 33.8688, 'aop_deg': 270.0},
+            'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0, 'raan_deg': 0.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
             'gs_key': 'Sydney',
             'percent_visible': 25.954492865406866}
     opt.create_and_set_best_satellite(best)
+    
+    best2 = {'key': 'best2', 
+        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144, 'raan_deg': 72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
+        'gs_key': 'Sydney',
+        'percent_visible': 25.954492865406866}
+    opt.create_and_set_best_satellite(best2)
+
+    best3 = {'key': 'best3', 
+        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*2, 'raan_deg': 2*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
+        'gs_key': 'Sydney',
+        'percent_visible': 25.954492865406866}
+    opt.create_and_set_best_satellite(best3)
+
+    best4 = {'key': 'best4', 
+        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*3, 'raan_deg': 3*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
+        'gs_key': 'Sydney',
+        'percent_visible': 25.954492865406866}
+    opt.create_and_set_best_satellite(best4)
+
+    best5 = {'key': 'best5', 
+        'params': {'a_km': 14450.0, 'e': 0.0, 'ta_deg': 108.0-144*4, 'raan_deg': 4*72.0, 'inc_deg': 47.3684, 'aop_deg': 270.0},
+        'gs_key': 'Sydney',
+        'percent_visible': 25.954492865406866}
+    opt.create_and_set_best_satellite(best5)
 
     # sim.animate_3d(sat_keys=[best["key"]], step=10, camera_spin=True)
 
@@ -56,9 +97,9 @@ def main():
     #             save_plot_path="optimisation_2d.png"
     #             )
     
-    # sim.animate_3d(sat_keys=[best["key"]], step=10, camera_spin=True)
     sim.satellite_trajectories[best["key"]].plot_ground_track()
-    sim.ground_station_trajectories["Sydney"].plot_ground_track(block=True)
+    sim.plot_all_four(gs_key="Sydney", sat_keys=[best["key"], best2["key"], best3["key"], best4["key"], best5["key"]], min_elev_deg=0.0)
+
     # # 2) Local refinement (SPSA gradient descent
     # opt.refine_best_local(
     #     steps=10,

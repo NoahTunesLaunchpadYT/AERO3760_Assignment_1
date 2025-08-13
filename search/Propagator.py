@@ -44,13 +44,16 @@ class SatellitePropagator(Propagator):
         r0, v0 = sat.current_state()
         y0 = np.hstack([r0, v0])
 
-        sol = solve_ivp(rhs_j2, (t0, tf), y0,
-                        method=self.method,
-                        rtol=self.rtol, atol=self.atol,
-                        max_step=self.max_step,
-                        dense_output=True)
-        if not sol.success:
-            raise RuntimeError("Propagation failed: " + sol.message)
+        try:
+            sol = solve_ivp(rhs_j2, (t0, tf), y0,
+                            method=self.method,
+                            rtol=self.rtol, atol=self.atol,
+                            max_step=self.max_step,
+                            dense_output=True)
+            if not sol.success:
+                raise RuntimeError("Propagation failed: " + sol.message)
+        except Exception as e:
+            raise RuntimeError(f"Propagation error: {e}, y0: {y0}")
 
         Y = sol.sol(t_samples).T
         R = Y[:, 0:3]
