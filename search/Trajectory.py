@@ -68,7 +68,7 @@ class Trajectory:
         plt.legend(); plt.title(f"ECI position vs time — {self.name}")
         plt.tight_layout(); plt.show()
 
-    def plot_ground_track(self, block: bool = False) -> None:
+    def plot_ground_track(self, block: bool = True) -> None:
         """
         Approx ground track: ECI -> ECEF by z-rotation with Earth's mean spin.
         (For high precision, replace with GMST/temporal model.)

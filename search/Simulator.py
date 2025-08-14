@@ -580,6 +580,7 @@ class Simulator:
                     earth_wire: bool = True,
                     wire_steps: int = 24,
                     camera_spin: bool = False,
+                    block: bool = True,
                     save_path: str | None = None,
                     dpi: int = 120,
                     repeat: bool = True):
@@ -834,99 +835,374 @@ class Simulator:
             else:
                 print("Unsupported extension for save_path; showing instead.")
 
-        plt.show()
+        plt.show(block=block)
         return fig, ani
 
     def elevation_series(self,
                         gs_key: str,
-                        sat_key: str,
+                        sat_key: str | None = None,
                         min_elev_deg: float = 0.0,
                         return_az: bool = False,
                         *,
-                        plot: bool = True,
-                        fig_size: tuple[float, float] = (10, 6),
+                        # NEW: multi-sat support
+                        sat_keys: list[str] | tuple[str, ...] | None = None,
+                        plot: bool = False,
+                        fig_size: tuple[float, float] = (12, 7),
                         save_plot_path: str | None = None):
         """
-        Compute the satellite's elevation at each simulator time step as seen from a
-        given ground station, and report the percentage of time it is visible.
+        Compute elevation series and visibility for one or many satellites.
 
-        Also plots (if plot=True) a figure with two subplots sharing the x-axis:
-        - Top: elevation [deg] with the visibility threshold line.
-        - Bottom: visibility mask (0/1) as a step plot.
+        Single-satellite mode (legacy):
+        - Provide `sat_key="SAT1"` and leave `sat_keys=None`.
+        - Returns (jd, elevation_deg, visible_mask, percent_visible, [azimuth_deg])
 
-        Returns:
-            jd (np.ndarray): (n,) Julian Dates used by the simulator.
-            elevation_deg (np.ndarray): (n,) elevation in degrees.
-            visible_mask (np.ndarray): (n,) boolean array where elevation >= min_elev_deg.
-            percent_visible (float): Percentage of samples with elevation >= min_elev_deg, in [0, 100].
-            azimuth_deg (np.ndarray, optional): (n,) azimuth in degrees; only returned if return_az=True.
+        Multi-satellite mode:
+        - Provide `sat_keys=[... ]` (and ignore `sat_key`) to get plotting of:
+            * Top: overlapping elevation vs time for all sats (with threshold line)
+            * Bottom: visibility raster (time on x, satellite index on y)
+        - Prints duration-weighted stats to console:
+            * total time with ≥1 satellite visible
+            * average number of satellites visible
+            * visible time for each satellite
+        - Returns a dict keyed by sat key with each satellite’s tuple
+            like in single-satellite mode (azimuth omitted if return_az=False).
         """
         import numpy as np
 
         if self.JD is None:
             raise ValueError("Build the timebase and run the propagators before calling elevation_series().")
-
         if gs_key not in self.ground_station_trajectories:
             raise KeyError(f"Ground station '{gs_key}' not found")
-        if sat_key not in self.satellite_trajectories:
-            raise KeyError(f"Satellite '{sat_key}' not found")
+
+        # --- Select single vs multi ---
+        if sat_keys is None:
+            if sat_key is None:
+                raise ValueError("Provide either `sat_key` (single) or `sat_keys` (multiple).")
+            sat_keys = [sat_key]
+        else:
+            sat_keys = list(sat_keys)
+
+        # --- Pull trajectories ---
+        for sk in sat_keys:
+            if sk not in self.satellite_trajectories:
+                raise KeyError(f"Satellite '{sk}' not found")
 
         gs_traj = self.ground_station_trajectories[gs_key]
-        sat_traj = self.satellite_trajectories[sat_key]
 
-        # Compute azimuth/elevation in the GS frame
-        az_deg, el_deg, _ = self._compute_az_el(gs_traj, sat_traj)  # el_deg is (n,)
+        jd = self.JD
+        n = jd.shape[0]
+        if n < 2:
+            raise ValueError("Timebase must contain at least two samples.")
 
-        if el_deg.shape[0] != self.JD.shape[0]:
-            raise ValueError("Mismatched timebases: GS, SAT, and simulator JD must have the same length.")
+        # Duration per interval in seconds (piecewise-constant over [i, i+1))
+        dt = np.diff(jd) * 86400.0
+        total_duration = float(np.sum(dt))
 
-        # Apply minimum elevation threshold for visibility
-        visible_mask = el_deg >= float(min_elev_deg)
+        # Containers
+        per_sat = {}              # sk -> (jd, el, mask, pct, [az])
+        elevations = []           # list of (sk, el_deg)
+        vis_masks = []            # bool mask per sat (length n)
+        labels = []               # sat names in order
 
-        # Percentage of visible samples (ignore NaNs if any)
-        valid = np.isfinite(el_deg)
-        total = int(valid.sum())
-        percent_visible = 0.0 if total == 0 else 100.0 * float((visible_mask & valid).sum()) / float(total)
+        # --- Compute per-satellite series ---
+        for sk in sat_keys:
+            sat_traj = self.satellite_trajectories[sk]
+            az_deg, el_deg, _ = self._compute_az_el(gs_traj, sat_traj)  # el_deg shape (n,)
 
-        # -------- Plotting --------
+            if el_deg.shape[0] != n:
+                raise ValueError(f"Mismatched timebase for satellite '{sk}'.")
+
+            # Visibility mask (False where NaN)
+            valid = np.isfinite(el_deg)
+            vis_mask = (el_deg >= float(min_elev_deg)) & valid
+
+            # Sample-based percent (legacy behaviour)
+            total_valid = int(valid.sum())
+            pct = 0.0 if total_valid == 0 else 100.0 * float((vis_mask & valid).sum()) / float(total_valid)
+
+            if return_az:
+                per_sat[sk] = (jd.copy(), el_deg.copy(), vis_mask, float(pct), az_deg.copy())
+            else:
+                per_sat[sk] = (jd.copy(), el_deg.copy(), vis_mask, float(pct))
+
+            elevations.append((sk, el_deg))
+            vis_masks.append(vis_mask)
+            labels.append(sk)
+
+        # If single-satellite mode, return legacy tuple immediately (and plot as before)
+        if len(sat_keys) == 1:
+            sk = sat_keys[0]
+            jd_out, el_out, mask_out, pct_out, *maybe_az = per_sat[sk]
+
+            if plot:
+                import matplotlib.pyplot as plt
+                y_vis = mask_out.astype(int)
+
+                fig, (ax1, ax2) = plt.subplots(
+                    2, 1, figsize=fig_size, sharex=True,
+                    gridspec_kw={"height_ratios": [3, 1]}
+                )
+                ax1.plot(jd_out, el_out, lw=1.2, label=sk)
+                ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0)
+                ax1.set_ylabel("Elevation [deg]")
+                ax1.set_title(f"Elevation and Visibility (min elev {min_elev_deg:.1f}°) — {gs_key}")
+                ax1.legend(loc="upper right")
+                ax1.grid(True, alpha=0.3)
+
+                ax2.step(jd_out, y_vis, where="post")
+                ax2.set_ylim(-0.1, 1.1)
+                ax2.set_yticks([0, 1], labels=["Hidden", "Visible"])
+                ax2.set_xlabel("Julian Date")
+                ax2.set_ylabel("Vis")
+                ax2.grid(True, axis="y", alpha=0.3)
+
+                fig.tight_layout()
+                if save_plot_path:
+                    try:
+                        fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
+                    except Exception as exc:
+                        print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
+                plt.show()
+
+            return (jd_out, el_out, mask_out, pct_out, *maybe_az)
+
+        # -------------- Multi-satellite analysis --------------
+        vis_masks = np.vstack(vis_masks)            # shape (S, n)
+        # For interval-weighted stats, drop last sample to match dt length
+        vis_intervals = vis_masks[:, :-1]          # shape (S, n-1)
+        # Count how many sats visible in each interval
+        count_visible = np.sum(vis_intervals, axis=0).astype(float)  # (n-1,)
+
+        # Total time with >= 1 visible (sec)
+        time_with_any = float(np.sum((count_visible > 0) * dt))
+        # Average number of satellites visible (duration-weighted)
+        avg_visible = float(np.sum(count_visible * dt) / total_duration) if total_duration > 0 else 0.0
+        # Per-sat visible time (sec)
+        time_visible_per_sat = np.sum(vis_intervals * dt, axis=1)     # (S,)
+
+        # Console logs
+        def _fmt_time(seconds: float) -> str:
+            if seconds < 120:
+                return f"{seconds:.1f}s"
+            minutes = seconds / 60.0
+            if minutes < 120:
+                return f"{minutes:.1f} min"
+            hours = minutes / 60.0
+            return f"{hours:.2f} h"
+
+        print(f"[VIS STATS] Total duration: {_fmt_time(total_duration)}")
+        print(f"[VIS STATS] Time with ≥1 satellite: {_fmt_time(time_with_any)} "
+            f"({100.0 * time_with_any / total_duration:.2f}%)")
+        print(f"[VIS STATS] Average # visible: {avg_visible:.3f}")
+        for sk, tsec in zip(labels, time_visible_per_sat):
+            print(f"[VIS STATS] {sk}: visible {_fmt_time(float(tsec))} "
+                f"({100.0 * float(tsec) / total_duration:.2f}%)")
+
+        # -------------- Multi-satellite plotting --------------
         if plot:
             import matplotlib.pyplot as plt
 
-            jd = self.JD
-            y_vis = visible_mask.astype(int)
-
             fig, (ax1, ax2) = plt.subplots(
-                2, 1, figsize=fig_size, sharex=True,
-                gridspec_kw={"height_ratios": [3, 1]}
+                2, 1, figsize=fig_size, sharex=False,
+                gridspec_kw={"height_ratios": [3, 2]}
             )
 
-            # Top: elevation with threshold
-            ax1.plot(jd, el_deg, lw=1.2)
+            # Top: overlapping elevation curves
+            for sk, el in elevations:
+                ax1.plot(jd, el, lw=1.0, label=sk)
             ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0)
             ax1.set_ylabel("Elevation [deg]")
-            ax1.set_title(f"Elevation and Visibility (min elev {min_elev_deg:.1f}°) — {gs_key} vs {sat_key}")
+            ax1.set_title(f"Elevations (min elev {min_elev_deg:.1f}°) — GS: {gs_key}")
             ax1.grid(True, alpha=0.3)
+            ax1.legend(ncols=2, fontsize=8, loc="upper right")
 
-            # Bottom: visibility mask (0/1) as step
-            ax2.step(jd, y_vis, where="post")
-            ax2.set_ylim(-0.1, 1.1)
-            ax2.set_yticks([0, 1], labels=["Hidden", "Visible"])
+            # Bottom: visibility raster
+            # Use intervals so the x-extent matches visibility hold on [i, i+1)
+            # Build a 2D array of ints for imshow
+            vis_img = vis_intervals.astype(int)  # shape (S, n-1)
+            # imshow expects [rows, cols] -> [S, n-1]; set extent to JD min..max
+            ax2.imshow(vis_img,
+                    aspect="auto",
+                    interpolation="nearest",
+                    extent=[jd[0], jd[-1], -0.5, len(labels) - 0.5])
+            ax2.set_yticks(range(len(labels)))
+            ax2.set_yticklabels(labels)
             ax2.set_xlabel("Julian Date")
-            ax2.set_ylabel("Vis")
-            ax2.grid(True, axis="y", alpha=0.3)
+            ax2.set_ylabel("Satellite")
+            ax2.set_title("Visibility (1 = visible)")
+            ax2.grid(False)
 
             fig.tight_layout()
-
             if save_plot_path:
                 try:
                     fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
                 except Exception as exc:
                     print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-
             plt.show()
 
-        # -------- Returns --------
-        if return_az:
-            return self.JD.copy(), el_deg.copy(), visible_mask, percent_visible, az_deg.copy()
-        else:
-            return self.JD.copy(), el_deg.copy(), visible_mask, percent_visible
+        # Return dictionary for multi-sat
+        return per_sat
+
+    def visible_distance_series(self,
+                                gs_key: str,
+                                *,
+                                sat_keys: list[str] | tuple[str, ...],
+                                min_elev_deg: float = 0.0,
+                                max_distance_km: float | None = None,
+                                plot: bool = True,
+                                show_all_distances: bool = True,
+                                fig_size: tuple[float, float] = (12, 7),
+                                save_plot_path: str | None = None):
+        """
+        Plot the distance to the ground station of the *currently visible* (closest) satellite.
+        Also prints the portion of total simulation time with a satellite within `max_distance_km`.
+
+        Args:
+            gs_key: ground-station key
+            sat_keys: satellites to include
+            min_elev_deg: visibility elevation threshold
+            max_distance_km: distance threshold for stats (if None, no threshold stat)
+            plot: draw the figure
+            show_all_distances: if True, overlay each satellite's distance (faint) for context
+            fig_size, save_plot_path: figure controls
+
+        Returns:
+            dict with:
+                'jd'                : (n,) JD
+                'distance_km'       : (n,) closest-visible distance (NaN if none visible)
+                'chosen_sat'        : (n,) chosen satellite key or None per sample
+                'per_sat'           : {sat_key: {'distance_km': (n,), 'visible': (n,)bool}}
+                'fraction_within'   : float in [0,1] if max_distance_km provided else None
+        """
+        import numpy as np
+
+        if self.JD is None:
+            raise ValueError("Build the timebase and run the propagators before calling visible_distance_series().")
+        if gs_key not in self.ground_station_trajectories:
+            raise KeyError(f"Ground station '{gs_key}' not found")
+        if not sat_keys:
+            raise ValueError("sat_keys must be a non-empty list/tuple of satellite keys.")
+
+        sat_keys = list(sat_keys)
+        for sk in sat_keys:
+            if sk not in self.satellite_trajectories:
+                raise KeyError(f"Satellite '{sk}' not found")
+
+        gs_traj = self.ground_station_trajectories[gs_key]
+        jd = self.JD
+        n = jd.shape[0]
+        if n < 2:
+            raise ValueError("Timebase must contain at least two samples.")
+
+        # Interval durations (seconds) for duration-weighted stats
+        dt = np.diff(jd) * 86400.0
+        total_duration = float(np.sum(dt))
+
+        # Per-sat distances and visibility
+        per_sat: dict[str, dict] = {}
+        dist_stack = []   # (S, n)
+        vis_stack  = []   # (S, n)
+
+        for sk in sat_keys:
+            sat_traj = self.satellite_trajectories[sk]
+            # Assume _compute_az_el returns (az_deg, el_deg, range_km)
+            az_deg, el_deg, rng_km = self._compute_az_el(gs_traj, sat_traj)
+
+            if rng_km.shape[0] != n or el_deg.shape[0] != n:
+                raise ValueError(f"Mismatched timebase for satellite '{sk}'.")
+
+            valid = np.isfinite(rng_km) & np.isfinite(el_deg)
+            vis_mask = (el_deg >= float(min_elev_deg)) & valid
+
+            per_sat[sk] = {
+                "distance_km": rng_km.copy(),
+                "visible": vis_mask.copy()
+            }
+            dist_stack.append(rng_km)
+            vis_stack.append(vis_mask)
+
+        dist_stack = np.vstack(dist_stack)  # (S, n)
+        vis_stack  = np.vstack(vis_stack)   # (S, n)
+        S = dist_stack.shape[0]
+
+        # Closest *visible* satellite per time sample
+        masked_dist = np.where(vis_stack, dist_stack, np.inf)           # (S, n)
+        min_dist = masked_dist.min(axis=0)                              # (n,)
+        has_any_visible = np.any(vis_stack, axis=0)                     # (n,)
+        min_dist[~has_any_visible] = np.nan
+
+        # Which satellite was chosen (by index, then map to key)
+        chosen_idx = np.argmin(masked_dist, axis=0)                     # (n,)
+        chosen_idx[~has_any_visible] = -1
+        chosen_sat = np.array([sat_keys[i] if i >= 0 else None for i in chosen_idx], dtype=object)
+
+        # -------- duration-weighted threshold stat --------
+        fraction_within = None
+        if max_distance_km is not None and np.isfinite(max_distance_km):
+            within = has_any_visible[:-1] & (min_dist[:-1] <= float(max_distance_km))
+            time_within = float(np.sum(dt[within]))
+            fraction_within = (time_within / total_duration) if total_duration > 0 else 0.0
+
+            def _fmt_time(seconds: float) -> str:
+                if seconds < 120: return f"{seconds:.1f}s"
+                m = seconds / 60.0
+                if m < 120: return f"{m:.1f} min"
+                return f"{m/60.0:.2f} h"
+
+            pct = 100.0 * fraction_within
+            print(f"[DIST STATS] Max distance: {max_distance_km:.1f} km")
+            print(f"[DIST STATS] Portion of total time within threshold (and visible): {pct:.2f}% "
+                f"({_fmt_time(time_within)} of {_fmt_time(total_duration)})")
+
+        # -------- plotting --------
+        if plot:
+            import matplotlib.pyplot as plt
+
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=fig_size, sharex=True, gridspec_kw={"height_ratios": [3, 2]}
+            )
+
+            # Top: closest-visible distance (bold). Optionally overlay all distances faintly.
+            if show_all_distances:
+                for sk in sat_keys:
+                    ax1.plot(jd, per_sat[sk]["distance_km"], lw=0.8, alpha=0.35, label=sk)
+                # keep legend compact
+                ax1.legend(ncols=2, fontsize=8, loc="upper right")
+
+            ax1.plot(jd, min_dist, lw=2.0, color="black", label="Closest visible")
+            if max_distance_km is not None and np.isfinite(max_distance_km):
+                ax1.axhline(max_distance_km, linestyle="--", linewidth=1.0, color="black")
+            ax1.set_ylabel("Range [km]")
+            ax1.set_title(f"Closest Visible Distance — GS: {gs_key}  (min elev {min_elev_deg:.1f}°)")
+            ax1.grid(True, alpha=0.3)
+
+            # Bottom: visibility raster (like your elevation_series multi-sat plot)
+            vis_intervals = vis_stack[:, :-1].astype(int)  # (S, n-1)
+            ax2.imshow(
+                vis_intervals,
+                aspect="auto",
+                interpolation="nearest",
+                extent=[jd[0], jd[-1], -0.5, S - 0.5]
+            )
+            ax2.set_yticks(range(S))
+            ax2.set_yticklabels(sat_keys)
+            ax2.set_xlabel("Julian Date")
+            ax2.set_ylabel("Satellite")
+            ax2.set_title("Visibility (1 = visible)")
+            ax2.grid(False)
+
+            fig.tight_layout()
+            if save_plot_path:
+                try:
+                    fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
+                except Exception as exc:
+                    print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
+            plt.show()
+
+        return {
+            "jd": jd.copy(),
+            "distance_km": min_dist,
+            "chosen_sat": chosen_sat,
+            "per_sat": per_sat,
+            "fraction_within": fraction_within,
+        }
