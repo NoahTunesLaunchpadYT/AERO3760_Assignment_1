@@ -2,8 +2,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-from utils import _segmented_polar_arrays
+from utils import _sky_series_for_plot, gmst_from_jd
 from tqdm.auto import tqdm  # at top of Simulator.py (or local import inside function)
 
 # bring in your trajectory classes
@@ -368,13 +367,21 @@ class Simulator:
         plt.show()
         return ani
     
-    def _compute_az_el(self, gs_traj, sat_traj):
+    def _compute_az_el(self, gs_traj, sat_traj, return_distance=False):
         """
         Compute azimuth/elevation of a satellite as seen from a ground station,
         using the station's time-varying ENU basis in ECI.
 
+        Args:
+            gs_traj: Ground station trajectory with attributes JD, R, E_eci, N_eci, U_eci
+            sat_traj: Satellite trajectory with attributes JD, R
+            return_distance (bool): If True, also return the satellite-ground
+                                    distance (same length as az/el arrays).
+
         Returns:
-            az_deg (n,), el_deg (n,), vis_mask (n,) where vis_mask = el_deg >= 0
+            az_deg (n,), el_deg (n,), vis_mask (n,) 
+            If return_distance=True, also returns:
+            distance_m (n,)
         """
         # Ensure same time base length
         if gs_traj.JD.shape[0] != sat_traj.JD.shape[0]:
@@ -384,7 +391,7 @@ class Simulator:
         Rs = sat_traj.R                   # (n,3)
         rho = Rs - Rg                     # LOS in ECI (n,3)
 
-        # Local ENU basis in ECI; rows are time samples
+        # Local ENU basis in ECI
         E_eci = getattr(gs_traj, 'E_eci', None)
         N_eci = getattr(gs_traj, 'N_eci', None)
         U_eci = getattr(gs_traj, 'U_eci', None)
@@ -401,203 +408,203 @@ class Simulator:
         az = np.degrees(np.arctan2(e, n))      # [-180, 180]
         az = (az + 360.0) % 360.0
 
-        # Elevation
+        # Elevation and range
         rho_norm = np.linalg.norm(rho, axis=1)
         el = np.degrees(np.arcsin(np.clip(u / rho_norm, -1.0, 1.0)))
 
         vis = el >= 0.0
-        return az, el, vis
 
-    def plot_sky_track(self,
-                    gs_key: str,
-                    sat_keys: list[str],
-                    min_elev_deg: float = 0.0,
-                    save_path: str | None = None):
-        """
-        Plot static sky tracks (az/el) for selected satellites as seen from a ground station.
-        Uses NaN segmentation to avoid chords across horizon gaps and azimuth wraps.
-        """
-        if gs_key not in self.ground_station_trajectories:
-            raise KeyError(f"Ground station '{gs_key}' not found")
-        for k in sat_keys:
-            if k not in self.satellite_trajectories:
-                raise KeyError(f"Satellite '{k}' not found")
+        if return_distance:
+            return az, el, vis, rho_norm
+        else:
+            return az, el, vis
 
+    def plot_sky_anim_window(self, gs_key: str, sat_keys: list[str],
+                            *, step=1, interval=40, tailsky=None, repeat=True,
+                            min_elev_deg=0.0, distance_thresh_km=np.inf,
+                            figsize=(7, 7), block=True):
         import numpy as np
-        import matplotlib.pyplot as plt
-
-        gs_traj = self.ground_station_trajectories[gs_key]
-
-        # Polar sky plot: azimuth clockwise from North; radius = elevation
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='polar')
-        ax.set_theta_zero_location("N")
-        ax.set_theta_direction(-1)
-        ax.set_rlim(90, 0)  # centre = 90° (zenith), edge = 0° (horizon)
-        ax.set_thetagrids(range(0, 360, 30))
-        ax.set_rgrids([0, 15, 30, 45, 60, 75, 90], angle=135)
-
-        for k in sat_keys:
-            sat_traj = self.satellite_trajectories[k]
-            az_deg, el_deg, _ = self._compute_az_el(gs_traj, sat_traj)
-
-            th_plot, r_plot, vis, th_raw, r_raw = _segmented_polar_arrays(
-                az_deg, el_deg, min_elev_deg
-            )
-            ax.plot(th_plot, r_plot, lw=1.4, label=f"SAT:{k}")
-
-            # Mark first/last visible points (over entire timebase)
-            if np.any(vis):
-                idx = np.where(vis)[0]
-                ax.plot([th_raw[idx[0]]], [r_raw[idx[0]]], marker='o', ms=4)
-                ax.plot([th_raw[idx[-1]]], [r_raw[idx[-1]]], marker='s', ms=4)
-
-        ax.set_title(f"Sky track from GS:{gs_key} (elev ≥ {min_elev_deg:.0f}°)")
-        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1.10), fontsize=8)
-
-        plt.tight_layout()
-        if save_path:
-            fig.savefig(save_path, dpi=150)
-        plt.show()
-        return fig
-
-    def animate_sky_track(self,
-                        gs_key: str,
-                        sat_keys: list[str],
-                        step: int = 1,
-                        interval: int = 40,
-                        tail: int | None = 600,
-                        min_elev_deg: float = 0.0,
-                        save_path: str | None = None,
-                        dpi: int = 120,
-                        repeat: bool = True):
-        """
-        Animate sky tracks for selected satellites as seen from a ground station.
-        Uses NaN segmentation to avoid chords across horizon gaps and azimuth wraps.
-        """
-        if gs_key not in self.ground_station_trajectories:
-            raise KeyError(f"Ground station '{gs_key}' not found")
-        for k in sat_keys:
-            if k not in self.satellite_trajectories:
-                raise KeyError(f"Satellite '{k}' not found")
-
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
-
-        gs_traj = self.ground_station_trajectories[gs_key]
-
-        # Precompute per-satellite arrays (downsample by step)
-        tracks = []  # list of dicts for each sat
-        n_frames = None
-        for k in sat_keys:
-            sat_traj = self.satellite_trajectories[k]
-            az_deg, el_deg, _ = self._compute_az_el(gs_traj, sat_traj)
-
-            th_plot, r_plot, vis, th_raw, r_raw = _segmented_polar_arrays(
-                az_deg[::step], el_deg[::step], min_elev_deg
-            )
-            tracks.append({
-                "name": f"SAT:{k}",
-                "theta_plot": th_plot,   # segmented for the trail
-                "r_plot": r_plot,
-                "vis": vis,              # visibility mask (downsampled)
-                "theta_raw": th_raw,     # raw for head marker
-                "r_raw": r_raw
-            })
-            n_frames = len(th_raw) if n_frames is None else min(n_frames, len(th_raw))
-
-        if tail is None or tail <= 0:
-            tail = n_frames
-
-        # Polar sky plot setup
-        fig = plt.figure()
+        fig = plt.figure(figsize=figsize)
         ax = fig.add_subplot(111, projection='polar')
         ax.set_theta_zero_location("N")
         ax.set_theta_direction(-1)
         ax.set_rlim(90, 0)
         ax.set_thetagrids(range(0, 360, 30))
         ax.set_rgrids([0, 15, 30, 45, 60, 75, 90], angle=135)
-        ax.set_title(f"Sky track (animated) from GS:{gs_key} (elev ≥ {min_elev_deg:.0f}°)")
+        ax.set_title(f"Sky track (animated) from GS:{gs_key}  (elev ≥ {min_elev_deg:.0f}°)")
 
-        # Artists
-        line_art, head_art = [], []
+        gs_traj = self.ground_station_trajectories[gs_key]
+        tracks = []
+        n_frames = None
+        for k in sat_keys:
+            S = self.satellite_trajectories[k]
+            az_full, el_full, _, dist_full = self._compute_az_el(gs_traj, S, return_distance=True)
+            az = az_full[::step]; el = el_full[::step]; dist = dist_full[::step]
+
+            th_s, r_s, th_d, r_d, vis, th_raw, r_raw = _sky_series_for_plot(
+                az, el, dist, min_elev_deg=min_elev_deg,
+                distance_thresh_km=distance_thresh_km
+            )
+            tracks.append({
+                "name": f"SAT:{k}",
+                "th_s": th_s, "r_s": r_s,
+                "th_d": th_d, "r_d": r_d,
+                "vis": vis, "th_raw": th_raw, "r_raw": r_raw
+            })
+            n_frames = len(th_raw) if n_frames is None else min(n_frames, len(th_raw))
+
+        if tailsky is None or tailsky <= 0 or tailsky > n_frames:
+            tailsky = n_frames
+
+        # Two artists per sat: solid trail + dotted trail, plus head
+        solid_lines, dotted_lines, heads = [], [], []
         for tr in tracks:
-            ln, = ax.plot([], [], lw=1.5, label=tr["name"], animated=False)
-            hd, = ax.plot([], [], marker='o', ms=4, animated=False)
-            line_art.append(ln); head_art.append(hd)
-        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1.10), fontsize=8)
+            ln_s, = ax.plot([], [], lw=1.6, label=tr["name"], animated=True)
+            ln_d, = ax.plot([], [], lw=1.6, linestyle=':', animated=True)
+            hd,   = ax.plot([], [], marker='o', ms=4, animated=True)
+            solid_lines.append(ln_s); dotted_lines.append(ln_d); heads.append(hd)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.20, 1.10), fontsize=8)
 
         def init():
-            for ln, hd in zip(line_art, head_art):
-                ln.set_data([], []); hd.set_data([], [])
-            return (*line_art, *head_art)
+            for ln_s, ln_d, hd in zip(solid_lines, dotted_lines, heads):
+                ln_s.set_data([], []); ln_d.set_data([], []); hd.set_data([], [])
+            return (*solid_lines, *dotted_lines, *heads)
 
         def update(frame: int):
+            i0 = max(0, frame - tailsky + 1)
             for i, tr in enumerate(tracks):
-                i0 = max(0, frame - tail)
-                th_seg = tr["theta_plot"][i0:frame+1]
-                r_seg  = tr["r_plot"][i0:frame+1]
-                line_art[i].set_data(th_seg, r_seg)
-
-                # Head marker only when visible at this frame
+                solid_lines[i].set_data(tr["th_s"][i0:frame+1], tr["r_s"][i0:frame+1])
+                dotted_lines[i].set_data(tr["th_d"][i0:frame+1], tr["r_d"][i0:frame+1])
                 if tr["vis"][frame]:
-                    head_art[i].set_data([tr["theta_raw"][frame]], [tr["r_raw"][frame]])
+                    heads[i].set_data([tr["th_raw"][frame]], [tr["r_raw"][frame]])
                 else:
-                    head_art[i].set_data([], [])
-            return (*line_art, *head_art)
+                    heads[i].set_data([], [])
+            return (*solid_lines, *dotted_lines, *heads)
 
-        ani = animation.FuncAnimation(
-            fig, update, frames=n_frames, init_func=init,
-            interval=interval, blit=False, repeat=repeat, cache_frame_data=False
-        )
+        ani = animation.FuncAnimation(fig, update, frames=n_frames,
+                                    init_func=init, interval=interval,
+                                    blit=True, repeat=repeat, cache_frame_data=False)
+        plt.show(block=block)
+        return fig, ani
 
-        if save_path is not None:
-            ext = save_path.lower().split('.')[-1]
-            if ext == 'mp4':
-                writer = animation.FFMpegWriter(fps=int(1000/interval), bitrate=1800)
-                ani.save(save_path, writer=writer, dpi=dpi)
-            elif ext in ('gif', 'agif'):
-                writer = animation.PillowWriter(fps=int(1000/interval))
-                ani.save(save_path, writer=writer, dpi=dpi)
-            else:
-                print("Unsupported extension; showing instead.")
-        plt.show()
-        return ani
+    def plot_sky_static_window(self, gs_key: str, sat_keys: list[str],
+                            *, min_elev_deg=0.0, distance_thresh_km=np.inf,
+                            figsize=(7, 7), block=True):
+        import numpy as np
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection='polar')
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(-1)
+        ax.set_rlim(90, 0)
+        ax.set_thetagrids(range(0, 360, 30))
+        ax.set_rgrids([0, 15, 30, 45, 60, 75, 90], angle=135)
+        ax.set_title(f"Sky track (static) from GS:{gs_key}  (elev ≥ {min_elev_deg:.0f}°)")
 
-    def plot_all_four(self,
-                    gs_key: str,
-                    sat_keys: list[str],
-                    *,
-                    step: int = 1,
-                    interval: int = 40,
-                    tail3d: int | None = 800,
-                    tailsky: int | None = 600,
-                    min_elev_deg: float = 0.0,
-                    figsize=(14, 10),
-                    show_earth: bool = True,
-                    earth_alpha: float = 0.15,
-                    earth_wire: bool = True,
-                    wire_steps: int = 24,
-                    camera_spin: bool = False,
-                    block: bool = True,
-                    save_path: str | None = None,
-                    dpi: int = 120,
-                    repeat: bool = True):
-        """
-        2x2 panel:
-        (TL) Static 3D ECI plot
-        (TR) 3D ECI animation (fixed camera; low-res Earth; blitting if possible)
-        (BL) Static sky plot (polar, elevation as radius) with NaN segmentation
-        (BR) Animated sky plot with NaN segmentation (blitting)
+        gs_traj = self.ground_station_trajectories[gs_key]
+        for k in sat_keys:
+            S = self.satellite_trajectories[k]
+            az_deg, el_deg, _, dist_km = self._compute_az_el(gs_traj, S, return_distance=True)
 
-        Returns: (fig, ani)
-        - fig: Matplotlib Figure
-        - ani: FuncAnimation for the combined animations (TR, BR)
-        """
+            th_s, r_s, th_d, r_d, vis, th_raw, r_raw = _sky_series_for_plot(
+                az_deg, el_deg, dist_km, min_elev_deg=min_elev_deg,
+                distance_thresh_km=distance_thresh_km
+            )
+
+            # Solid (near)
+            ax.plot(th_s, r_s, lw=1.6, label=f"SAT:{k}")
+            # Dotted (far but visible)
+            ax.plot(th_d, r_d, lw=1.6, linestyle=':')
+
+            # Mark first/last visible samples (optional)
+            if np.any(vis):
+                idx = np.where(vis)[0]
+                ax.plot([th_raw[idx[0]]], [r_raw[idx[0]]], marker='o', ms=4)
+                ax.plot([th_raw[idx[-1]]], [r_raw[idx[-1]]], marker='s', ms=4)
+
+        ax.legend(loc='upper right', bbox_to_anchor=(1.20, 1.10), fontsize=8)
+        plt.show(block=block)
+        return fig
+
+    def plot_eci_anim_window(self, gs_key: str, sat_keys: list[str],
+                                *, step=1, interval=40, tail3d=None,
+                                figsize=(8, 6), camera_spin=False, repeat=True, block=True):
         import numpy as np
         import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
+        from matplotlib import animation
+
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection='3d')
+
+        gs_traj = self.ground_station_trajectories[gs_key]
+        sats = {k: self.satellite_trajectories[k] for k in sat_keys}
+
+        series3d = [("GS:"+gs_key, gs_traj.R[::step])]
+        for k, S in sats.items():
+            series3d.append(("SAT:"+k, S.R[::step]))
+        all_R3d = np.vstack([R for _, R in series3d])
+        xs3d, ys3d, zs3d = all_R3d[:,0], all_R3d[:,1], all_R3d[:,2]
+
+        lines3d, pts3d = [], []
+        for name, _ in series3d:
+            # Create the line first to get its assigned colour from the cycle
+            ln, = ax.plot([], [], [], lw=1.2, label=name, animated=True)
+            color = ln.get_color()  # <- reuse this colour for the points
+            pt, = ax.plot([], [], [], marker='o', markersize=6,
+                        linestyle='None',  # no connecting line for the head
+                        color=color,        # same colour as the line
+                        markerfacecolor=color,
+                        markeredgecolor=color,
+                        animated=True)
+            lines3d.append(ln); pts3d.append(pt)
+
+        max_range3d = np.array([xs3d.max()-xs3d.min(),
+                                ys3d.max()-ys3d.min(),
+                                zs3d.max()-zs3d.min()]).max()
+        mid3d = np.array([xs3d.mean(), ys3d.mean(), zs3d.mean()])
+        ax.set_xlim(mid3d[0]-0.5*max_range3d, mid3d[0]+0.5*max_range3d)
+        ax.set_ylim(mid3d[1]-0.5*max_range3d, mid3d[1]+0.5*max_range3d)
+        ax.set_zlim(mid3d[2]-0.4*max_range3d, mid3d[2]+0.4*max_range3d)
+        ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
+        ax.set_title('ECI trajectories — animated')
+        ax.legend(loc='upper right', fontsize=8)
+        ax.grid(False)
+
+        n_frames_3d = min(R.shape[0] for _, R in series3d)
+        if tail3d is None or tail3d <= 0 or tail3d > n_frames_3d:
+            tail3d = n_frames_3d
+
+        def init():
+            for ln, pt in zip(lines3d, pts3d):
+                ln.set_data([], []); ln.set_3d_properties([])
+                pt.set_data([], []); pt.set_3d_properties([])
+            return (*lines3d, *pts3d)
+
+        def update(frame: int):
+            for i, (_, R) in enumerate(series3d):
+                i0 = max(0, frame - tail3d + 1)
+                seg = R[i0:frame+1]
+                lines3d[i].set_data(seg[:,0], seg[:,1])
+                lines3d[i].set_3d_properties(seg[:,2])
+                pts3d[i].set_data([R[frame,0]], [R[frame,1]])
+                pts3d[i].set_3d_properties([R[frame,2]])
+            if camera_spin:
+                ax.view_init(elev=ax.elev, azim=(ax.azim + 0.5) % 360.0)
+            return (*lines3d, *pts3d)
+
+        use_blit = not camera_spin
+        ani = animation.FuncAnimation(fig, update, frames=n_frames_3d,
+                                    init_func=init, interval=interval,
+                                    blit=use_blit, repeat=repeat, cache_frame_data=False)
+        plt.show(block=block)
+        return fig, ani
+
+
+    def plot_eci_static_window(self, gs_key: str, sat_keys: list[str],
+                            *, figsize=(8, 6), show_earth=True,
+                            earth_alpha=0.15, earth_wire=True, wire_steps=24, block=True):
+        import numpy as np
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection='3d')
 
         if self.JD is None:
             raise ValueError("Build the timebase and run the simulator first.")
@@ -610,19 +617,6 @@ class Simulator:
         gs_traj = self.ground_station_trajectories[gs_key]
         sats = {k: self.satellite_trajectories[k] for k in sat_keys}
 
-        # =========================
-        # Figure & subplots (2x2)
-        # =========================
-        fig = plt.figure(figsize=figsize, constrained_layout=True)
-        g = fig.add_gridspec(2, 2)
-        ax3d_static = fig.add_subplot(g[0, 0], projection='3d')
-        ax3d_anim   = fig.add_subplot(g[0, 1], projection='3d')
-        axsky_static = fig.add_subplot(g[1, 0], projection='polar')
-        axsky_anim   = fig.add_subplot(g[1, 1], projection='polar')
-
-        # ==========================================
-        # (TL) Static 3D ECI plot (GS + satellites)
-        # ==========================================
         if show_earth:
             Re = globals().get('R_EARTH', 6378.1363)
             u = np.linspace(0, 2*np.pi, 60)
@@ -630,454 +624,110 @@ class Simulator:
             xs = Re * np.outer(np.cos(u), np.sin(v))
             ys = Re * np.outer(np.sin(u), np.sin(v))
             zs = Re * np.outer(np.ones_like(u), np.cos(v))
-            ax3d_static.plot_surface(xs, ys, zs, rstride=2, cstride=2,
-                                    alpha=earth_alpha, linewidth=0, shade=True)
+            ax.plot_surface(xs, ys, zs, rstride=2, cstride=2,
+                            alpha=earth_alpha, linewidth=0, shade=True)
             if earth_wire:
                 uw = np.linspace(0, 2*np.pi, wire_steps)
                 vw = np.linspace(0, np.pi, wire_steps//2)
                 xw = Re * np.outer(np.cos(uw), np.sin(vw))
                 yw = Re * np.outer(np.sin(uw), np.sin(vw))
                 zw = Re * np.outer(np.ones_like(uw), np.cos(vw))
-                ax3d_static.plot_wireframe(xw, yw, zw, linewidth=0.3)
+                ax.plot_wireframe(xw, yw, zw, linewidth=0.3)
 
         Rg = gs_traj.R
-        ax3d_static.plot(Rg[:,0], Rg[:,1], Rg[:,2], lw=1.2, label=f"GS:{gs_key}")
-        ax3d_static.scatter(Rg[0,0], Rg[0,1], Rg[0,2], s=30)
-        ax3d_static.scatter(Rg[-1,0], Rg[-1,1], Rg[-1,2], s=30)
+        ax.plot(Rg[:,0], Rg[:,1], Rg[:,2], lw=1.2, label=f"GS:{gs_key}")
+        ax.scatter(Rg[0,0], Rg[0,1], Rg[0,2], s=30)
+        ax.scatter(Rg[-1,0], Rg[-1,1], Rg[-1,2], s=30)
 
-        all_R_static = [Rg]
+        all_R = [Rg]
         for k, S in sats.items():
             R = S.R
-            ax3d_static.plot(R[:,0], R[:,1], R[:,2], lw=1.2, label=f"SAT:{k}")
-            ax3d_static.scatter(R[0,0], R[0,1], R[0,2], s=30)
-            ax3d_static.scatter(R[-1,0], R[-1,1], R[-1,2], s=30)
-            all_R_static.append(R)
+            ax.plot(R[:,0], R[:,1], R[:,2], lw=1.2, label=f"SAT:{k}")
+            ax.scatter(R[0,0], R[0,1], R[0,2], s=30)
+            ax.scatter(R[-1,0], R[-1,1], R[-1,2], s=30)
+            all_R.append(R)
 
-        all_R = np.vstack(all_R_static)
-        xs_all, ys_all, zs_all = all_R[:,0], all_R[:,1], all_R[:,2]
-        max_range = np.array([xs_all.max()-xs_all.min(),
-                            ys_all.max()-ys_all.min(),
-                            zs_all.max()-zs_all.min()]).max()
-        mid = np.array([xs_all.mean(), ys_all.mean(), zs_all.mean()])
-        ax3d_static.set_xlim(mid[0]-0.5*max_range, mid[0]+0.5*max_range)
-        ax3d_static.set_ylim(mid[1]-0.5*max_range, mid[1]+0.5*max_range)
-        ax3d_static.set_zlim(mid[2]-0.4*max_range, mid[2]+0.4*max_range)
-        ax3d_static.set_xlabel('x [km]'); ax3d_static.set_ylabel('y [km]'); ax3d_static.set_zlabel('z [km]')
-        ax3d_static.set_title('ECI trajectories (3D) — static')
-        ax3d_static.legend(loc='upper right', fontsize=8)
-
-        # =======================================
-        # (TR) 3D animation — FAST (blitting)
-        # =======================================
-        # Gather series (downsampled)
-        series3d = [("GS:"+gs_key, Rg[::step])]
-        for k, S in sats.items():
-            series3d.append(("SAT:"+k, S.R[::step]))
-        all_R3d = np.vstack([R for _, R in series3d])
-        xs3d, ys3d, zs3d = all_R3d[:,0], all_R3d[:,1], all_R3d[:,2]
-
-        if show_earth:
-            # low-res Earth, drawn once (no shading, antialias off)
-            Re = globals().get('R_EARTH', 6378.1363)
-            u2 = np.linspace(0, 2*np.pi, 36)
-            v2 = np.linspace(0, np.pi, 18)
-            xsE = Re * np.outer(np.cos(u2), np.sin(v2))
-            ysE = Re * np.outer(np.sin(u2), np.sin(v2))
-            zsE = Re * np.outer(np.ones_like(u2), np.cos(v2))
-            ax3d_anim.plot_surface(xsE, ysE, zsE,
-                                rstride=2, cstride=2,
-                                alpha=0.10, linewidth=0,
-                                antialiased=False, shade=False, zorder=0)
-
-        lines3d, pts3d = [], []
-        for name, _ in series3d:
-            ln, = ax3d_anim.plot([], [], [], lw=1.2, label=name, animated=True)
-            pt   = ax3d_anim.plot([], [], [], marker='o', markersize=6, animated=True)[0]
-            lines3d.append(ln); pts3d.append(pt)
-
-        max_range3d = np.array([xs3d.max()-xs3d.min(),
-                                ys3d.max()-ys3d.min(),
-                                zs3d.max()-zs3d.min()]).max()
-        mid3d = np.array([xs3d.mean(), ys3d.mean(), zs3d.mean()])
-        ax3d_anim.set_xlim(mid3d[0]-0.5*max_range3d, mid3d[0]+0.5*max_range3d)
-        ax3d_anim.set_ylim(mid3d[1]-0.5*max_range3d, mid3d[1]+0.5*max_range3d)
-        ax3d_anim.set_zlim(mid3d[2]-0.4*max_range3d, mid3d[2]+0.4*max_range3d)
-        ax3d_anim.set_xlabel('x [km]'); ax3d_anim.set_ylabel('y [km]'); ax3d_anim.set_zlabel('z [km]')
-        ax3d_anim.set_title('ECI trajectories — animated')
-        ax3d_anim.legend(loc='upper right', fontsize=8)
-        ax3d_anim.grid(False)
-
-        n_frames_3d = min(R.shape[0] for _, R in series3d)
-        if tail3d is None or tail3d <= 0 or tail3d > n_frames_3d:
-            tail3d = n_frames_3d
-
-        # =======================================
-        # (BL) Static sky plot (with NaN segs)
-        # =======================================
-        axsky_static.set_theta_zero_location("N")
-        axsky_static.set_theta_direction(-1)
-        axsky_static.set_rlim(90, 0)  # radius = elevation: zenith at centre
-        axsky_static.set_thetagrids(range(0, 360, 30))
-        axsky_static.set_rgrids([0, 15, 30, 45, 60, 75, 90], angle=135)
-        axsky_static.set_title(f"Sky track (static) from GS:{gs_key} (elev ≥ {min_elev_deg:.0f}°)")
-
-        # =======================================
-        # (BR) Animated sky plot (with NaN segs)
-        # =======================================
-        axsky_anim.set_theta_zero_location("N")
-        axsky_anim.set_theta_direction(-1)
-        axsky_anim.set_rlim(90, 0)
-        axsky_anim.set_thetagrids(range(0, 360, 30))
-        axsky_anim.set_rgrids([0, 15, 30, 45, 60, 75, 90], angle=135)
-        axsky_anim.set_title(f"Sky track (animated) from GS:{gs_key} (elev ≥ {min_elev_deg:.0f}°)")
-
-        # Precompute sky tracks (segmented) for both static & animated
-        tracks = []   # for animation: dicts with arrays/labels
-        n_frames_sky = None
-        for k, S in sats.items():
-            az_deg_full, el_deg_full, _ = self._compute_az_el(gs_traj, S)
-
-            # Static (all samples, NaN-segmented)
-            th_plot_s, r_plot_s, vis_s, _, _ = _segmented_polar_arrays(az_deg_full, el_deg_full, min_elev_deg)
-            axsky_static.plot(th_plot_s, r_plot_s, lw=1.4, label=f"SAT:{k}")
-            if np.any(vis_s):
-                idx = np.where(vis_s)[0]
-                axsky_static.plot([np.radians(az_deg_full[idx[0]])], [el_deg_full[idx[0]]], marker='o', ms=4)
-                axsky_static.plot([np.radians(az_deg_full[idx[-1]])], [el_deg_full[idx[-1]]], marker='s', ms=4)
-
-            # Animated (step-subsampled, NaN-segmented)
-            az_deg = az_deg_full[::step]
-            el_deg = el_deg_full[::step]
-            th_plot, r_plot, vis, theta_raw, r_raw = _segmented_polar_arrays(az_deg, el_deg, min_elev_deg)
-            tracks.append({
-                "name": f"SAT:{k}",
-                "theta_plot": th_plot,
-                "r_plot": r_plot,
-                "vis": vis,
-                "theta_raw": theta_raw,
-                "r_raw": r_raw
-            })
-            n_frames_sky = len(theta_raw) if n_frames_sky is None else min(n_frames_sky, len(theta_raw))
-
-        axsky_static.legend(loc='upper right', bbox_to_anchor=(1.20, 1.10), fontsize=8)
-
-        # Artists for animated sky (animated=True for blit)
-        sky_lines, sky_heads = [], []
-        for tr in tracks:
-            ln, = axsky_anim.plot([], [], lw=1.5, label=tr["name"], animated=True)
-            hd, = axsky_anim.plot([], [], marker='o', ms=4, animated=True)
-            sky_lines.append(ln); sky_heads.append(hd)
-        axsky_anim.legend(loc='upper right', bbox_to_anchor=(1.20, 1.10), fontsize=8)
-
-        # ============================
-        # Combined animation
-        # ============================
-        n_frames = min(n_frames_3d, n_frames_sky) if n_frames_sky is not None else n_frames_3d
-        if tailsky is None or tailsky <= 0 or tailsky > n_frames:
-            tailsky = n_frames
-
-        def init():
-            for ln, pt in zip(lines3d, pts3d):
-                ln.set_data([], []); ln.set_3d_properties([])
-                pt.set_data([], []); pt.set_3d_properties([])
-            for ln, hd in zip(sky_lines, sky_heads):
-                ln.set_data([], []); hd.set_data([], [])
-            return (*lines3d, *pts3d, *sky_lines, *sky_heads)
-
-        def update(frame: int):
-            # 3D (fixed camera; only update artists)
-            for i, (_, R) in enumerate(series3d):
-                i0 = frame - tail3d + 1
-                if i0 < 0: i0 = 0
-                seg = R[i0:frame+1]
-                lines3d[i].set_data(seg[:,0], seg[:,1])
-                lines3d[i].set_3d_properties(seg[:,2])
-                pts3d[i].set_data([R[frame,0]], [R[frame,1]])
-                pts3d[i].set_3d_properties([R[frame,2]])
-            # optional camera spin disables blitting benefits; keep False for speed
-            if camera_spin:
-                ax3d_anim.view_init(elev=ax3d_anim.elev, azim=(ax3d_anim.azim + 0.5) % 360.0)
-
-            # Sky (NaN-segmented trail; head only if visible)
-            i0s = frame - tailsky + 1
-            if i0s < 0: i0s = 0
-            for i, tr in enumerate(tracks):
-                th_seg = tr["theta_plot"][i0s:frame+1]
-                r_seg  = tr["r_plot"][i0s:frame+1]
-                sky_lines[i].set_data(th_seg, r_seg)
-                if tr["vis"][frame]:
-                    sky_heads[i].set_data([tr["theta_raw"][frame]], [tr["r_raw"][frame]])
-                else:
-                    sky_heads[i].set_data([], [])
-            return (*lines3d, *pts3d, *sky_lines, *sky_heads)
-
-        # Try blitting when camera is fixed; fall back if backend/3D can't blit
-        use_blit = not camera_spin
-        try:
-            ani = animation.FuncAnimation(
-                fig, update, frames=n_frames, init_func=init,
-                interval=interval, blit=use_blit, repeat=repeat, cache_frame_data=False
-            )
-        except Exception:
-            ani = animation.FuncAnimation(
-                fig, update, frames=n_frames, init_func=init,
-                interval=interval, blit=False, repeat=repeat, cache_frame_data=False
-            )
-
-        if save_path:
-            ext = save_path.lower().split('.')[-1]
-            if ext == 'mp4':
-                writer = animation.FFMpegWriter(fps=int(1000/interval), bitrate=1800)
-                ani.save(save_path, writer=writer, dpi=dpi)
-            elif ext in ('gif', 'agif'):
-                writer = animation.PillowWriter(fps=int(1000/interval))
-                ani.save(save_path, writer=writer, dpi=dpi)
-            else:
-                print("Unsupported extension for save_path; showing instead.")
+        all_R = np.vstack(all_R)
+        xs, ys, zs = all_R[:,0], all_R[:,1], all_R[:,2]
+        max_range = np.array([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]).max()
+        mid = np.array([xs.mean(), ys.mean(), zs.mean()])
+        ax.set_xlim(mid[0]-0.5*max_range, mid[0]+0.5*max_range)
+        ax.set_ylim(mid[1]-0.5*max_range, mid[1]+0.5*max_range)
+        ax.set_zlim(mid[2]-0.4*max_range, mid[2]+0.4*max_range)
+        ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
+        ax.set_title('ECI trajectories (3D) — static')
+        ax.legend(loc='upper right', fontsize=8)
 
         plt.show(block=block)
-        return fig, ani
+        return fig
 
-    def elevation_series(self,
-                        gs_key: str,
-                        sat_key: str | None = None,
-                        min_elev_deg: float = 0.0,
-                        return_az: bool = False,
-                        *,
-                        # NEW: multi-sat support
-                        sat_keys: list[str] | tuple[str, ...] | None = None,
-                        plot: bool = False,
-                        fig_size: tuple[float, float] = (12, 7),
-                        save_plot_path: str | None = None):
+    def plot_all_four(self, gs_key: str, sat_keys: list[str], *,
+                    step: int = 1,
+                    interval: int = 40,
+                    tail3d: int | None = 800,
+                    tailsky: int | None = 600,
+                    min_elev_deg: float = 0.0,
+                    distance_thresh_km: float = np.inf,
+                    repeat: bool = True):
         """
-        Compute elevation series and visibility for one or many satellites.
-
-        Single-satellite mode (legacy):
-        - Provide `sat_key="SAT1"` and leave `sat_keys=None`.
-        - Returns (jd, elevation_deg, visible_mask, percent_visible, [azimuth_deg])
-
-        Multi-satellite mode:
-        - Provide `sat_keys=[... ]` (and ignore `sat_key`) to get plotting of:
-            * Top: overlapping elevation vs time for all sats (with threshold line)
-            * Bottom: visibility raster (time on x, satellite index on y)
-        - Prints duration-weighted stats to console:
-            * total time with ≥1 satellite visible
-            * average number of satellites visible
-            * visible time for each satellite
-        - Returns a dict keyed by sat key with each satellite’s tuple
-            like in single-satellite mode (azimuth omitted if return_az=False).
+        Legacy wrapper: opens four separate non-blocking windows.
         """
-        import numpy as np
+        # 3D static
+        fig1 = self.plot_eci_static_window(gs_key, sat_keys, block=False)
 
-        if self.JD is None:
-            raise ValueError("Build the timebase and run the propagators before calling elevation_series().")
-        if gs_key not in self.ground_station_trajectories:
-            raise KeyError(f"Ground station '{gs_key}' not found")
+        # 3D animated
+        fig2, ani2 = self.plot_eci_anim_window(gs_key, sat_keys, step=step,
+                                            interval=interval, tail3d=tail3d,
+                                            repeat=repeat, block=False)
 
-        # --- Select single vs multi ---
-        if sat_keys is None:
-            if sat_key is None:
-                raise ValueError("Provide either `sat_key` (single) or `sat_keys` (multiple).")
-            sat_keys = [sat_key]
-        else:
-            sat_keys = list(sat_keys)
+        # Sky static (solid near, dotted far)
+        fig3 = self.plot_sky_static_window(gs_key, sat_keys,
+                                        min_elev_deg=min_elev_deg,
+                                        distance_thresh_km=distance_thresh_km, block=False)
 
-        # --- Pull trajectories ---
-        for sk in sat_keys:
-            if sk not in self.satellite_trajectories:
-                raise KeyError(f"Satellite '{sk}' not found")
+        # Sky animated (solid near, dotted far)
+        fig4, ani4 = self.plot_sky_anim_window(gs_key, sat_keys,
+                                            step=step, interval=interval,
+                                            tailsky=tailsky, repeat=repeat,
+                                            min_elev_deg=min_elev_deg,
+                                            distance_thresh_km=distance_thresh_km, block=False)
 
-        gs_traj = self.ground_station_trajectories[gs_key]
+        fig5 = self.plot_ground_tracks_window(gs_key, sat_keys)
 
-        jd = self.JD
-        n = jd.shape[0]
-        if n < 2:
-            raise ValueError("Timebase must contain at least two samples.")
+        return (fig1, fig2, fig3, fig4, fig5), (ani2, ani4)
 
-        # Duration per interval in seconds (piecewise-constant over [i, i+1))
-        dt = np.diff(jd) * 86400.0
-        total_duration = float(np.sum(dt))
-
-        # Containers
-        per_sat = {}              # sk -> (jd, el, mask, pct, [az])
-        elevations = []           # list of (sk, el_deg)
-        vis_masks = []            # bool mask per sat (length n)
-        labels = []               # sat names in order
-
-        # --- Compute per-satellite series ---
-        for sk in sat_keys:
-            sat_traj = self.satellite_trajectories[sk]
-            az_deg, el_deg, _ = self._compute_az_el(gs_traj, sat_traj)  # el_deg shape (n,)
-
-            if el_deg.shape[0] != n:
-                raise ValueError(f"Mismatched timebase for satellite '{sk}'.")
-
-            # Visibility mask (False where NaN)
-            valid = np.isfinite(el_deg)
-            vis_mask = (el_deg >= float(min_elev_deg)) & valid
-
-            # Sample-based percent (legacy behaviour)
-            total_valid = int(valid.sum())
-            pct = 0.0 if total_valid == 0 else 100.0 * float((vis_mask & valid).sum()) / float(total_valid)
-
-            if return_az:
-                per_sat[sk] = (jd.copy(), el_deg.copy(), vis_mask, float(pct), az_deg.copy())
-            else:
-                per_sat[sk] = (jd.copy(), el_deg.copy(), vis_mask, float(pct))
-
-            elevations.append((sk, el_deg))
-            vis_masks.append(vis_mask)
-            labels.append(sk)
-
-        # If single-satellite mode, return legacy tuple immediately (and plot as before)
-        if len(sat_keys) == 1:
-            sk = sat_keys[0]
-            jd_out, el_out, mask_out, pct_out, *maybe_az = per_sat[sk]
-
-            if plot:
-                import matplotlib.pyplot as plt
-                y_vis = mask_out.astype(int)
-
-                fig, (ax1, ax2) = plt.subplots(
-                    2, 1, figsize=fig_size, sharex=True,
-                    gridspec_kw={"height_ratios": [3, 1]}
-                )
-                ax1.plot(jd_out, el_out, lw=1.2, label=sk)
-                ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0)
-                ax1.set_ylabel("Elevation [deg]")
-                ax1.set_title(f"Elevation and Visibility (min elev {min_elev_deg:.1f}°) — {gs_key}")
-                ax1.legend(loc="upper right")
-                ax1.grid(True, alpha=0.3)
-
-                ax2.step(jd_out, y_vis, where="post")
-                ax2.set_ylim(-0.1, 1.1)
-                ax2.set_yticks([0, 1], labels=["Hidden", "Visible"])
-                ax2.set_xlabel("Julian Date")
-                ax2.set_ylabel("Vis")
-                ax2.grid(True, axis="y", alpha=0.3)
-
-                fig.tight_layout()
-                if save_plot_path:
-                    try:
-                        fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
-                    except Exception as exc:
-                        print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-                plt.show()
-
-            return (jd_out, el_out, mask_out, pct_out, *maybe_az)
-
-        # -------------- Multi-satellite analysis --------------
-        vis_masks = np.vstack(vis_masks)            # shape (S, n)
-        # For interval-weighted stats, drop last sample to match dt length
-        vis_intervals = vis_masks[:, :-1]          # shape (S, n-1)
-        # Count how many sats visible in each interval
-        count_visible = np.sum(vis_intervals, axis=0).astype(float)  # (n-1,)
-
-        # Total time with >= 1 visible (sec)
-        time_with_any = float(np.sum((count_visible > 0) * dt))
-        # Average number of satellites visible (duration-weighted)
-        avg_visible = float(np.sum(count_visible * dt) / total_duration) if total_duration > 0 else 0.0
-        # Per-sat visible time (sec)
-        time_visible_per_sat = np.sum(vis_intervals * dt, axis=1)     # (S,)
-
-        # Console logs
-        def _fmt_time(seconds: float) -> str:
-            if seconds < 120:
-                return f"{seconds:.1f}s"
-            minutes = seconds / 60.0
-            if minutes < 120:
-                return f"{minutes:.1f} min"
-            hours = minutes / 60.0
-            return f"{hours:.2f} h"
-
-        print(f"[VIS STATS] Total duration: {_fmt_time(total_duration)}")
-        print(f"[VIS STATS] Time with ≥1 satellite: {_fmt_time(time_with_any)} "
-            f"({100.0 * time_with_any / total_duration:.2f}%)")
-        print(f"[VIS STATS] Average # visible: {avg_visible:.3f}")
-        for sk, tsec in zip(labels, time_visible_per_sat):
-            print(f"[VIS STATS] {sk}: visible {_fmt_time(float(tsec))} "
-                f"({100.0 * float(tsec) / total_duration:.2f}%)")
-
-        # -------------- Multi-satellite plotting --------------
-        if plot:
-            import matplotlib.pyplot as plt
-
-            fig, (ax1, ax2) = plt.subplots(
-                2, 1, figsize=fig_size, sharex=False,
-                gridspec_kw={"height_ratios": [3, 2]}
-            )
-
-            # Top: overlapping elevation curves
-            for sk, el in elevations:
-                ax1.plot(jd, el, lw=1.0, label=sk)
-            ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0)
-            ax1.set_ylabel("Elevation [deg]")
-            ax1.set_title(f"Elevations (min elev {min_elev_deg:.1f}°) — GS: {gs_key}")
-            ax1.grid(True, alpha=0.3)
-            ax1.legend(ncols=2, fontsize=8, loc="upper right")
-
-            # Bottom: visibility raster
-            # Use intervals so the x-extent matches visibility hold on [i, i+1)
-            # Build a 2D array of ints for imshow
-            vis_img = vis_intervals.astype(int)  # shape (S, n-1)
-            # imshow expects [rows, cols] -> [S, n-1]; set extent to JD min..max
-            ax2.imshow(vis_img,
-                    aspect="auto",
-                    interpolation="nearest",
-                    extent=[jd[0], jd[-1], -0.5, len(labels) - 0.5])
-            ax2.set_yticks(range(len(labels)))
-            ax2.set_yticklabels(labels)
-            ax2.set_xlabel("Julian Date")
-            ax2.set_ylabel("Satellite")
-            ax2.set_title("Visibility (1 = visible)")
-            ax2.grid(False)
-
-            fig.tight_layout()
-            if save_plot_path:
-                try:
-                    fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
-                except Exception as exc:
-                    print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-            plt.show()
-
-        # Return dictionary for multi-sat
-        return per_sat
-
-    def visible_distance_series(self,
-                                gs_key: str,
-                                *,
-                                sat_keys: list[str] | tuple[str, ...],
-                                min_elev_deg: float = 0.0,
-                                max_distance_km: float | None = None,
-                                plot: bool = True,
-                                show_all_distances: bool = True,
-                                fig_size: tuple[float, float] = (12, 7),
-                                save_plot_path: str | None = None):
+    def plot_elevation_visibility_distance(self,
+                                        gs_key: str,
+                                        *,
+                                        sat_keys: list[str] | tuple[str, ...],
+                                        min_elev_deg: float = 0.0,
+                                        max_distance_km: float | None = None,
+                                        show_all_distances: bool = True,
+                                        fig_size: tuple[float, float] = (12, 9),
+                                        save_plot_path: str | None = None):
         """
-        Plot the distance to the ground station of the *currently visible* (closest) satellite.
-        Also prints the portion of total simulation time with a satellite within `max_distance_km`.
+        One-stop plot with three rows:
+        (1) Overlapping elevations for all satellites (with min-elev line)
+        (2) Visibility raster (time on x, satellite on y; 1=visible)
+        (3) Closest *visible* distance vs time (NaN when none visible), with optional threshold
 
-        Args:
-            gs_key: ground-station key
-            sat_keys: satellites to include
-            min_elev_deg: visibility elevation threshold
-            max_distance_km: distance threshold for stats (if None, no threshold stat)
-            plot: draw the figure
-            show_all_distances: if True, overlay each satellite's distance (faint) for context
-            fig_size, save_plot_path: figure controls
+        Also logs:
+        - total time with ≥1 satellite visible
+        - average number of satellites visible (duration-weighted)
+        - visible time per satellite
+        - portion of time when a visible satellite is within `max_distance_km` (if provided)
 
         Returns:
-            dict with:
-                'jd'                : (n,) JD
-                'distance_km'       : (n,) closest-visible distance (NaN if none visible)
-                'chosen_sat'        : (n,) chosen satellite key or None per sample
-                'per_sat'           : {sat_key: {'distance_km': (n,), 'visible': (n,)bool}}
-                'fraction_within'   : float in [0,1] if max_distance_km provided else None
+        dict with:
+            'jd'                 : (n,) JD
+            'count_visible'      : (n-1,) # visible per interval
+            'closest_visible_km' : (n,)   min distance among visible sats (NaN if none)
+            'chosen_sat'         : (n,)   satellite key chosen at each sample or None
+            'per_sat'            : { key: {'elevation_deg': (n,), 'visible': (n,), 'distance_km': (n,)} }
+            'stats'              : dict with 'time_with_any', 'avg_visible', 'per_sat_time', 'fraction_within'
         """
-        import numpy as np
-
         if self.JD is None:
-            raise ValueError("Build the timebase and run the propagators before calling visible_distance_series().")
+            raise ValueError("Build the timebase and run the propagators before calling this plot.")
         if gs_key not in self.ground_station_trajectories:
             raise KeyError(f"Ground station '{gs_key}' not found")
         if not sat_keys:
@@ -1097,112 +747,217 @@ class Simulator:
         # Interval durations (seconds) for duration-weighted stats
         dt = np.diff(jd) * 86400.0
         total_duration = float(np.sum(dt))
+        t_mid = 0.5 * (jd[:-1] + jd[1:])  # midpoints for interval plots
 
-        # Per-sat distances and visibility
+        # ---- Per-satellite series ----
         per_sat: dict[str, dict] = {}
-        dist_stack = []   # (S, n)
-        vis_stack  = []   # (S, n)
+        elev_stack = []
+        dist_stack = []
+        vis_stack  = []
 
         for sk in sat_keys:
             sat_traj = self.satellite_trajectories[sk]
-            # Assume _compute_az_el returns (az_deg, el_deg, range_km)
-            az_deg, el_deg, rng_km = self._compute_az_el(gs_traj, sat_traj)
-
-            if rng_km.shape[0] != n or el_deg.shape[0] != n:
+            # Use your extended API: returns (az, el, vis, distance)
+            az_deg, el_deg, _, rng_km = self._compute_az_el(gs_traj, sat_traj, return_distance=True)
+            if el_deg.shape[0] != n or rng_km.shape[0] != n:
                 raise ValueError(f"Mismatched timebase for satellite '{sk}'.")
 
-            valid = np.isfinite(rng_km) & np.isfinite(el_deg)
-            vis_mask = (el_deg >= float(min_elev_deg)) & valid
+            valid = np.isfinite(el_deg) & np.isfinite(rng_km)
+            vis_mask = (el_deg >= float(min_elev_deg)) & valid & (rng_km <= max_distance_km)
 
             per_sat[sk] = {
+                "elevation_deg": el_deg.copy(),
+                "visible": vis_mask.copy(),
                 "distance_km": rng_km.copy(),
-                "visible": vis_mask.copy()
             }
+
+            elev_stack.append(el_deg)
             dist_stack.append(rng_km)
             vis_stack.append(vis_mask)
 
+        elev_stack = np.vstack(elev_stack)  # (S, n)
         dist_stack = np.vstack(dist_stack)  # (S, n)
         vis_stack  = np.vstack(vis_stack)   # (S, n)
-        S = dist_stack.shape[0]
+        S = len(sat_keys)
 
-        # Closest *visible* satellite per time sample
-        masked_dist = np.where(vis_stack, dist_stack, np.inf)           # (S, n)
-        min_dist = masked_dist.min(axis=0)                              # (n,)
-        has_any_visible = np.any(vis_stack, axis=0)                     # (n,)
+        # ---- Visibility counts per interval ----
+        vis_intervals = vis_stack[:, :-1]                 # (S, n-1)
+        count_visible = np.sum(vis_intervals, axis=0)     # (n-1,)
+
+        # ---- Closest visible distance per sample ----
+        masked_dist = np.where(vis_stack, dist_stack, np.inf)  # (S, n)
+        min_dist = masked_dist.min(axis=0)                     # (n,)
+        has_any_visible = np.any(vis_stack, axis=0)            # (n,)
         min_dist[~has_any_visible] = np.nan
 
-        # Which satellite was chosen (by index, then map to key)
-        chosen_idx = np.argmin(masked_dist, axis=0)                     # (n,)
+        # Which satellite was chosen (by index -> key)
+        chosen_idx = np.argmin(masked_dist, axis=0)            # (n,)
         chosen_idx[~has_any_visible] = -1
         chosen_sat = np.array([sat_keys[i] if i >= 0 else None for i in chosen_idx], dtype=object)
 
-        # -------- duration-weighted threshold stat --------
+        # ---- Stats ----
+        time_with_any = float(np.sum((count_visible > 0) * dt))
+        avg_visible = float(np.sum(count_visible * dt) / total_duration) if total_duration > 0 else 0.0
+        time_visible_per_sat = np.sum(vis_intervals * dt, axis=1)  # (S,)
+
         fraction_within = None
         if max_distance_km is not None and np.isfinite(max_distance_km):
-            within = has_any_visible[:-1] & (min_dist[:-1] <= float(max_distance_km))
+            # need interval alignment: evaluate min_dist on [i] for interval [i, i+1)
+            within = (has_any_visible[:-1]) & (min_dist[:-1] <= float(max_distance_km))
             time_within = float(np.sum(dt[within]))
             fraction_within = (time_within / total_duration) if total_duration > 0 else 0.0
 
-            def _fmt_time(seconds: float) -> str:
-                if seconds < 120: return f"{seconds:.1f}s"
-                m = seconds / 60.0
-                if m < 120: return f"{m:.1f} min"
-                return f"{m/60.0:.2f} h"
+        # Log nicely
+        def _fmt_time(seconds: float) -> str:
+            if seconds < 120: return f"{seconds:.1f}s"
+            m = seconds / 60.0
+            if m < 120: return f"{m:.1f} min"
+            return f"{m/60.0:.2f} h"
 
+        print(f"[VIS STATS] Total duration: {_fmt_time(total_duration)}")
+        print(f"[VIS STATS] Time with ≥1 satellite: {_fmt_time(time_with_any)} "
+            f"({100.0 * time_with_any / total_duration:.2f}%)")
+        print(f"[VIS STATS] Average # visible: {avg_visible:.3f}")
+        for sk, tsec in zip(sat_keys, time_visible_per_sat):
+            print(f"[VIS STATS] {sk}: visible {_fmt_time(float(tsec))} "
+                f"({100.0 * float(tsec) / total_duration:.2f}%)")
+        if fraction_within is not None:
             pct = 100.0 * fraction_within
-            print(f"[DIST STATS] Max distance: {max_distance_km:.1f} km")
-            print(f"[DIST STATS] Portion of total time within threshold (and visible): {pct:.2f}% "
-                f"({_fmt_time(time_within)} of {_fmt_time(total_duration)})")
+            print(f"[DIST STATS] Fraction of total time with a visible sat ≤ {max_distance_km:.1f} km: {pct:.2f}%")
 
-        # -------- plotting --------
-        if plot:
-            import matplotlib.pyplot as plt
+        # ---- Plot (3 rows) ----
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            3, 1, figsize=fig_size, sharex=True,
+            gridspec_kw={"height_ratios": [3, 2, 3]}
+        )
 
-            fig, (ax1, ax2) = plt.subplots(
-                2, 1, figsize=fig_size, sharex=True, gridspec_kw={"height_ratios": [3, 2]}
-            )
+        # Row 1: overlapping elevations
+        for sk in sat_keys:
+            ax1.plot(jd, per_sat[sk]["elevation_deg"], lw=1.0, label=sk)
+        ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0, color="black")
+        ax1.set_ylabel("Elevation [deg]")
+        ax1.set_title(f"Elevations — GS: {gs_key} (min elev {min_elev_deg:.1f}°)")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(ncols=2, fontsize=8, loc="upper right")
 
-            # Top: closest-visible distance (bold). Optionally overlay all distances faintly.
-            if show_all_distances:
-                for sk in sat_keys:
-                    ax1.plot(jd, per_sat[sk]["distance_km"], lw=0.8, alpha=0.35, label=sk)
-                # keep legend compact
-                ax1.legend(ncols=2, fontsize=8, loc="upper right")
+        # Row 2: visibility raster (interval-based)
+        vis_img = vis_intervals.astype(int)
+        ax2.imshow(vis_img, aspect="auto", interpolation="nearest",
+                extent=[jd[0], jd[-1], -0.5, S - 0.5])
+        ax2.set_yticks(range(S))
+        ax2.set_yticklabels(sat_keys)
+        ax2.set_ylabel("Satellite")
+        visible_pct = 100.0 * (time_with_any / total_duration) if total_duration > 0 else 0.0
+        ax2.set_title(f"Visibility (interval): {visible_pct:.1f}% of time has ≥1 visible")
+        ax2.grid(False)
 
-            ax1.plot(jd, min_dist, lw=2.0, color="black", label="Closest visible")
-            if max_distance_km is not None and np.isfinite(max_distance_km):
-                ax1.axhline(max_distance_km, linestyle="--", linewidth=1.0, color="black")
-            ax1.set_ylabel("Range [km]")
-            ax1.set_title(f"Closest Visible Distance — GS: {gs_key}  (min elev {min_elev_deg:.1f}°)")
-            ax1.grid(True, alpha=0.3)
+        # Row 3: closest visible distance
+        if show_all_distances:
+            for sk in sat_keys:
+                ax3.plot(jd, per_sat[sk]["distance_km"], lw=0.8, alpha=0.35)
+        ax3.plot(jd, min_dist, lw=2.0, color="black", label="Closest visible")
+        if max_distance_km is not None and np.isfinite(max_distance_km):
+            ax3.axhline(max_distance_km, linestyle="--", linewidth=1.0, color="black")
+            if fraction_within is not None:
+                ax3.text(0.01, 0.95, f"≤ {max_distance_km:.0f} km for {100*fraction_within:.1f}% of time",
+                        transform=ax3.transAxes, va="top", ha="left", fontsize=9)
+        ax3.set_ylabel("Range [km]")
+        ax3.set_xlabel("Julian Date")
+        ax3.set_title("Closest Visible Distance")
+        ax3.grid(True, alpha=0.3)
 
-            # Bottom: visibility raster (like your elevation_series multi-sat plot)
-            vis_intervals = vis_stack[:, :-1].astype(int)  # (S, n-1)
-            ax2.imshow(
-                vis_intervals,
-                aspect="auto",
-                interpolation="nearest",
-                extent=[jd[0], jd[-1], -0.5, S - 0.5]
-            )
-            ax2.set_yticks(range(S))
-            ax2.set_yticklabels(sat_keys)
-            ax2.set_xlabel("Julian Date")
-            ax2.set_ylabel("Satellite")
-            ax2.set_title("Visibility (1 = visible)")
-            ax2.grid(False)
-
-            fig.tight_layout()
-            if save_plot_path:
-                try:
-                    fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
-                except Exception as exc:
-                    print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-            plt.show()
+        fig.tight_layout()
+        if save_plot_path:
+            try:
+                fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
+            except Exception as exc:
+                print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
+        plt.show()
 
         return {
             "jd": jd.copy(),
-            "distance_km": min_dist,
+            "count_visible": count_visible.astype(float),
+            "closest_visible_km": min_dist,
             "chosen_sat": chosen_sat,
             "per_sat": per_sat,
-            "fraction_within": fraction_within,
+            "stats": {
+                "time_with_any": time_with_any,
+                "avg_visible": avg_visible,
+                "per_sat_time": {sk: float(t) for sk, t in zip(sat_keys, time_visible_per_sat)},
+                "fraction_within": fraction_within,
+                "total_duration": total_duration,
+            },
         }
+
+    def plot_ground_tracks_window(self, gs_key: str, sat_keys: list[str],
+                                *, step: int = 1, figsize=(10, 6), block: bool = True):
+        """
+        Static ground tracks for multiple satellites.
+        - Marks the ground station with a star (at its geodetic lon/lat).
+        - Each satellite has a unique colour.
+        - Handles lon wrap (-180..180) with NaN segmentation to avoid spurious lines.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        if gs_key not in self.ground_station_trajectories:
+            raise KeyError(f"Ground station '{gs_key}' not found")
+        for k in sat_keys:
+            if k not in self.satellite_trajectories:
+                raise KeyError(f"Satellite '{k}' not found")
+
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111)
+
+        # --- helper: ECI->ECEF->(lat,lon) for a trajectory S ---
+        def _eci_to_latlon(traj):
+            x, y, z = traj.R[::step, 0], traj.R[::step, 1], traj.R[::step, 2]
+            theta = gmst_from_jd(self.JD[::step])               # array of angles
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            x_e =  cos_t * x + sin_t * y
+            y_e = -sin_t * x + cos_t * y
+            z_e =  z
+            r = np.linalg.norm(np.stack([x_e, y_e, z_e], axis=-1), axis=-1)
+            lat = np.degrees(np.arcsin(z_e / r))
+            lon = np.degrees(np.arctan2(y_e, x_e))
+            lon = (lon + 180.0) % 360.0 - 180.0
+            return lon, lat
+
+        # --- plot each satellite with unique colour and wrap-safe segmentation ---
+        def _plot_wrapped(lon, lat, label):
+            lon = np.asarray(lon); lat = np.asarray(lat)
+            dlon = np.diff(lon)
+            # break line when we jump across the map edge
+            breaks = np.where(np.abs(dlon) > 180.0)[0] + 1
+            lon_seg = lon.astype(float).copy()
+            lat_seg = lat.astype(float).copy()
+            lon_seg[breaks] = np.nan
+            lat_seg[breaks] = np.nan
+            ln, = ax.plot(lon_seg, lat_seg, lw=1.5, label=label)
+            # head marker in same colour (last point)
+            ax.plot([lon[-1]], [lat[-1]], marker='o', ms=5,
+                    color=ln.get_color(), linestyle='None')
+            return ln
+
+        # Ground station star (use its geodetic lat/lon)
+        gs = self.ground_stations[gs_key] if hasattr(self, "ground_stations") else self.ground_station_trajectories[gs_key]
+        gs_lat = float(getattr(gs, "lat_deg", None) if hasattr(gs, "lat_deg") else gs.lat_deg)
+        gs_lon = float(getattr(gs, "lon_deg", None) if hasattr(gs, "lon_deg") else gs.lon_deg)
+        gs_lon = (gs_lon + 180.0) % 360.0 - 180.0
+        ax.plot([gs_lon], [gs_lat], marker='*', ms=12, color='k', label=f"GS:{gs_key}")
+
+        # Satellites
+        for k in sat_keys:
+            S = self.satellite_trajectories[k]
+            lon, lat = _eci_to_latlon(S)
+            _plot_wrapped(lon, lat, label=f"SAT:{k}")
+
+        ax.set_xlabel("Longitude [deg]")
+        ax.set_ylabel("Latitude [deg]")
+        ax.set_title("Ground tracks (approx)")
+        ax.set_xlim([-180, 180]); ax.set_ylim([-90, 90])
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=8)
+        fig.tight_layout()
+        plt.show(block=block)
+        return fig

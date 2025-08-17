@@ -36,7 +36,7 @@ def main():
             raan_deg=72.0,
             inc_deg=inc_deg,
             aop_deg=270.0,
-            min_elev_deg=0.0,
+            min_elev_deg=30.0,
             min_perigee_alt_km=400.0
         )
     

@@ -5,6 +5,8 @@ from Simulator import Simulator
 from Propagator import SatellitePropagator, GroundStationPropagator
 from GroundStation import GroundStation
 from Satellite import Satellite
+import spacetools
+from Coverage import cover_circle_process, greedy_phase_select
 
 def main():
     # --- build objects ---
@@ -15,12 +17,12 @@ def main():
     raan   = 0.0               # deg
     aop    = 0.0                # deg
     tru    = 0.0                # deg
-    number_sats = 4
+    number_sats = 5
     satellites = {}
 
     for i in range(number_sats):
         # Adjust the true anomaly for each satellite to create a spread
-        tru += (i / number_sats) * 360
+        tru = (i / number_sats) * 360
         satellites[f"LEO{i+1}"] = Satellite.from_keplerian(a_km, e, inc, raan, aop, tru)
 
     # Ground station: Sydney, ~50 m altitude
@@ -48,10 +50,14 @@ def main():
     # sim.plot_sky_track(gs_key="Sydney", sat_keys=["LEO1"], min_elev_deg=10)
     # sim.animate_sky_track(gs_key="Sydney", sat_keys=["LEO1"], step=2, interval=40, tail=800, min_elev_deg=10)
     
-    sim.plot_all_four(gs_key="Sydney", sat_keys=satellites.keys(), step=2, block=False)
-    per_sat = sim.elevation_series(gs_key="Sydney", sat_keys=satellites.keys(), min_elev_deg=0.0, plot=True)
-    sim.visible_distance_series(gs_key="Sydney", sat_keys=satellites.keys(), min_elev_deg=0.0, plot=True)
-    # sim.animate_3d(sat_keys=satellites.keys(), step=2, camera_spin=True)
+    # sim.plot_all_four(gs_key="Sydney", sat_keys=satellites.keys(), step=2, block=False)
+
+    sim.animate_3d(sat_keys=satellites.keys(), step=2, camera_spin=True)
+    info = sim.plot_elevation_visibility_distance(gs_key="Sydney", sat_keys=satellites.keys(), min_elev_deg=5.0, max_distance_km=7500)
+    visibility_mask = info["per_sat"]["LEO1"]["visible"] 
+    res = cover_circle_process(visibility_mask, 5)
+    print(res.shifts_deg)
+
 
 if __name__ == "__main__":
     main()

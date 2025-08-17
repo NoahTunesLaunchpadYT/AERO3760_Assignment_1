@@ -52,19 +52,18 @@ class VisibilityOptimiser:
                 if overwrite or (k not in self.sim.satellites):
                     self.sim.satellites[k] = sat
 
-    def _visibility_pct(self, gs_key: str, sat_key: str, min_elev_deg: float) -> float:
-        """Percent of samples with elevation >= min_elev_deg."""
-        if hasattr(self.sim, "elevation_series"):
-            _, _, _, pct = self.sim.elevation_series(gs_key, sat_key, min_elev_deg=min_elev_deg)
-            return float(pct)
+    def _visibility_pct(self, gs_key: str, sat_key: str, min_elev_deg: float, max_distance: float) -> float:
+        """Percent of samples with elevation >= min_elev_deg and within max_distance."""
         gs_traj = self.sim.ground_station_trajectories[gs_key]
         sat_traj = self.sim.satellite_trajectories[sat_key]
-        _, el, _ = self.sim._compute_az_el(gs_traj, sat_traj)
+        _, el, _, dist = self.sim._compute_az_el(gs_traj, sat_traj, return_distance=True)
+
         valid = np.isfinite(el)
         if valid.sum() == 0:
             return 0.0
-        return 100.0 * (np.logical_and(valid, el >= float(min_elev_deg)).sum() / valid.sum())
 
+        mask = valid & (el >= float(min_elev_deg)) & (dist < max_distance)
+        return 100.0 * (mask.sum() / valid.sum())
     # ---------------- public API ----------------
     def create_and_set_best_satellite(self, best: dict):
         """
@@ -104,6 +103,7 @@ class VisibilityOptimiser:
         aop_deg: float = 270.0,
         min_elev_deg: float = 10.0,
         min_perigee_alt_km: float = 200.0,
+        max_distance: float = 7500.0,
         key_prefix: str = "RES",
         overwrite_existing: bool = True,
         drop_old_trajectories: bool = True,
@@ -160,7 +160,7 @@ class VisibilityOptimiser:
         self.sim.run_all(sat_keys=[sat_key], gs_keys=[gs_key], progress=False)
 
         # Score
-        pct = float(self._visibility_pct(gs_key, sat_key, min_elev_deg=min_elev_deg))
+        pct = float(self._visibility_pct(gs_key, sat_key, min_elev_deg=min_elev_deg, max_distance=max_distance))
 
         # Optional clean up: keep or remove the sat/trajectory if you like
         # del self.sim.satellites[sat_key]

@@ -21,3 +21,12 @@ Simulate these
 
 [2D LOCAL BEST] vis ≥0.0°: 25.22%  |  a=12769.56 km, e=0.05000, ta=143.04°, inc=33.87°, raan=0.00°, aop=270.00°
 [2D LOCAL BEST] vis ≥10.0°: 18.09%  |  a=12769.56 km, e=0.05000, ta=339.66°, inc=33.87°, raan=0.00°, aop=270.00°
+
+
+perigee: 13650
+Apogee (Tundra): 70704
+Apogee (Molniya): 39619
+Inclination angle: 33.61
+RAAN 90 + LST epoch:
+AOP: 90:
+TA: 180
