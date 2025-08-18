@@ -1,20 +1,24 @@
 import numpy as np
 
 # ----------------- Earth / time helpers -----------------
-A_WGS84 = 6378.137            # km
-F_WGS84 = 1.0 / 298.257223563
-E2_WGS84 = F_WGS84 * (2.0 - F_WGS84)  # first eccentricity^2
+R_e = 6378.137                # Radius at the equator (km)
+R_p = 6356.7523               # Polar radius (km)
+f = 0.003352813               # Flattening
 
 def geodetic_to_ecef(lat_deg, lon_deg, h_m):
-    """WGS-84 geodetic -> ECEF (km)."""
+    """geodetic -> ECEF (km)."""
     lat = np.radians(lat_deg)
     lon = np.radians(lon_deg)
     h_km = h_m * 1e-3
     sinp, cosp = np.sin(lat), np.cos(lat)
-    N = A_WGS84 / np.sqrt(1.0 - E2_WGS84 * sinp*sinp)
-    x = (N + h_km) * cosp * np.cos(lon)
-    y = (N + h_km) * cosp * np.sin(lon)
-    z = (N * (1.0 - E2_WGS84) + h_km) * sinp
+    R_φ = R_e / np.sqrt(1.0 - (2.0*f - f**2) * sinp*sinp)
+
+    R_c = R_φ + h_km
+    R_s = (1-f)**2 * R_φ + h_km
+
+    x = (R_c) * cosp * np.cos(lon)
+    y = (R_c) * cosp * np.sin(lon)
+    z = R_s * sinp
     return np.array([x, y, z])
 
 def enu_matrix(lat_deg, lon_deg):

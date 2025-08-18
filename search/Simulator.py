@@ -39,12 +39,13 @@ class Simulator:
     # ---- timebase (JD) ----
     @staticmethod
     def calendar_to_jd(Y: int, M: int, D: int, h: int, m: int, s: float) -> float:
-        if M <= 2:
-            Y -= 1; M += 12
-        A = int(Y/100)
-        B = 2 - A + int(A/4)
-        frac = (h + m/60 + s/3600)/24.0
-        return int(365.25*(Y+4716)) + int(30.6001*(M+1)) + D + frac + B - 1524.5
+        if Y < 1901 or Y >= 2100:
+            raise ValueError("Year must be between 1901 and 2099")
+        ut = (h + m/60 + s/3600)/24.0
+        j0 = 367*Y - int((7*(Y + int((M + 9)/12)))/4) + int((275*M)/9) + D + 1721013.5
+        jd = j0 + ut
+
+        return jd
 
     def add_satellites(self,
                     sats: dict[str, object],

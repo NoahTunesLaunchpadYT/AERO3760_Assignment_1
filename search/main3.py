@@ -9,14 +9,17 @@ from utils import _wrap_deg
 import numpy as np
 
 def main():
+    # Calendar Day
     Y = 2026
     M = 0
     D = 0
+
+    # Time in Universal Time
     h = 0
     m = 0
     s = 0.0
 
-    min_elev_deg = 25.0
+    min_elev_deg = 30.0
     max_distance = 7500.0
 
     e=0.0
@@ -31,7 +34,7 @@ def main():
     gs_prop  = GroundStationPropagator()
 
     # Ground station: Sydney, ~50 m altitude
-    gs = GroundStation(lat_deg=-33.61, lon_deg=150.464444, h_m=50.0)
+    gs = GroundStation(lat_deg=-33.61, lon_deg=150.464444, h_m=1000.0)
 
     # Empty Simulator
     sim = Simulator({}, {"Sydney": gs}, sat_prop, gs_prop)
