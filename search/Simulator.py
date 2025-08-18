@@ -661,7 +661,7 @@ class Simulator:
         plt.show(block=block)
         return fig
 
-    def plot_all_four(self, gs_key: str, sat_keys: list[str], *,
+    def plot_all_five(self, gs_key: str, sat_keys: list[str], *,
                     step: int = 1,
                     interval: int = 40,
                     tail3d: int | None = 800,

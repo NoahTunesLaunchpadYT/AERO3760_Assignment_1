@@ -16,18 +16,18 @@ def main():
     m = 0
     s = 0.0
 
-    min_elev_deg = 30.0
+    min_elev_deg = 25.0
     max_distance = 7500.0
 
     e=0.0
-    a_km=11546.8275
+    a_km=11504
     inc_deg=48.529292
     aop_deg=270
     raan_deg=0.0
     ta_deg=182.0
 
     # Propagators
-    sat_prop = SatellitePropagator(method="RK45", rtol=1e-9, atol=1e-11, max_step=120.0)
+    sat_prop = SatellitePropagator(method="DOP853", rtol=1e-9, atol=1e-11, max_step=100.0)
     gs_prop  = GroundStationPropagator()
 
     # Ground station: Sydney, ~50 m altitude
@@ -38,30 +38,30 @@ def main():
 
     # Start: 2026-01-11 12:00:00 UTC, run 2 hours at 30 s steps
     sim.build_timebase(Y=Y, M=M, D=D, h=h, m=m, s=s,
-                       tf_days=4, sample_dt_s=100.0)
+                       tf_days=3, sample_dt_s=100.0)
 
     # Build timebase, add your GS (e.g., "Sydney"), then:
     opt = VisibilityOptimiser(sim)
 
-    # print("Optimising visibility for Sydney ground station...")
-    def f(a_km, inc_deg):
-        return opt.visibility_pct_objective(
-            e=e,
-            ta_deg=ta_deg,
-            gs_key="Sydney",
-            a_km=a_km,
-            raan_deg=raan_deg,
-            inc_deg=inc_deg,
-            aop_deg=aop_deg,
-            min_elev_deg=min_elev_deg,
-            max_distance=max_distance,
-            min_perigee_alt_km=400.0
-        )
+    # # print("Optimising visibility for Sydney ground station...")
+    # def f(a_km, inc_deg):
+    #     return opt.visibility_pct_objective(
+    #         e=e,
+    #         ta_deg=ta_deg,
+    #         gs_key="Sydney",
+    #         a_km=a_km,
+    #         raan_deg=raan_deg,
+    #         inc_deg=inc_deg,
+    #         aop_deg=aop_deg,
+    #         min_elev_deg=min_elev_deg,
+    #         max_distance=max_distance,
+    #         min_perigee_alt_km=400.0
+    #     )
     
     # best_rec, _, _ = grid_search_2d(
     #     func=f,
-    #     x_range=(11200, 12500), n_x=30, x_is_angle=False,
-    #     y_range=(40, 55), n_y=11, y_is_angle=True,
+    #     x_range=(11000, 13000), n_x=10, x_is_angle=False,
+    #     y_range=(30, 55), n_y=10, y_is_angle=True,
     #     return_figure=True,
     #     x_label="Semi-major Axis (km)",
     #     y_label="Inclination (deg)",
@@ -74,7 +74,7 @@ def main():
         'gs_key': 'Sydney',
         'percent_visible': 25.954492865406866}
 
-    opt.create_and_set_best_satellite(best)
+    # opt.create_and_set_best_satellite(best)
 
     # best_rec, _ = refine_2d_generic(func=f, x0=best["params"]["a_km"], y0=best["params"]["inc_deg"], x_is_angle=False, y_is_angle=True, x_bounds=(11200, 12500), y_bounds=(40, 55), steps=100,
     #                                 lr_x=10, lr_y=0.1, delta_x=5, delta_y=0.05, decay=0.97, decay_deltas=True, seed=None)
@@ -92,6 +92,7 @@ def main():
     # Build a 10-sat constellation
     # ==============================
     # 21 works
+    # 11 is good enough
     n = 11
     raan0 = best["params"]["raan_deg"]
     ta0   = best["params"]["ta_deg"]
@@ -125,6 +126,8 @@ def main():
     # ==============================
     # Plot constellation results
     # ==============================
+
+    sim.plot_ground_tracks_window(gs_key="Sydney", sat_keys=[sat_keys[0]], step=1)
     res_dict = sim.plot_elevation_visibility_distance(
         gs_key="Sydney",
         sat_keys=sat_keys,
@@ -135,7 +138,7 @@ def main():
     mask = res_dict["per_sat"]["plane0_sat00"]["visible"]
     np.save("mask.npy", mask)
 
-    sim.plot_all_four(
+    sim.plot_all_five(
         gs_key="Sydney",
         sat_keys=sat_keys,
         step=10,
