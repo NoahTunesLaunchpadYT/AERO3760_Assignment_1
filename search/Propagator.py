@@ -8,8 +8,9 @@ from scipy.integrate import solve_ivp
 # - geodetic_to_ecef(lat_deg, lon_deg, h_m) -> (3,) km
 # - gmst_from_jd(jd) -> radians
 # - enu_matrix(lat_deg, lon_deg) -> 3x3 (rows E,N,U)
-from j2 import rhs_j2
-from utils import geodetic_to_ecef, gmst_from_jd, enu_matrix
+from helper_j2 import rhs_j2
+from helper_time import gmst_from_jd
+from helper_coordinate_transforms import geodetic_to_eci, enu_matrix
 
 
 # ----------------- Abstract Propagator -----------------
@@ -72,38 +73,21 @@ class GroundStationPropagator(Propagator):
           up_eci (n,3) unit,
           E_eci (n,3), N_eci (n,3), U_eci (n,3)  # ENU basis vectors expressed in ECI
         """
-        JD = np.asarray(jd_array, float)
+        JD = np.asarray(jd_array, float)            # Array
+        gmst_rad = gmst_from_jd(JD)                 # Array
+        lst_rad_array = gmst_rad + np.radians(gs.lon_deg) # Array
+        lat_rad_array = np.full_like(lst_rad_array, np.radians(gs.lat_deg))
 
-        # Station fixed frames
-        r_ecef = geodetic_to_ecef(gs.lat_deg, gs.lon_deg, gs.h_m)   # (3,) km
-        ENU = enu_matrix(gs.lat_deg, gs.lon_deg)                    # 3x3 rows E,N,U
-        E_ecef, N_ecef, U_ecef = ENU[0], ENU[1], ENU[2]             # each (3,)
-
-        # Earth rotation
-        theta = gmst_from_jd(JD)                                    # (n,)
-        ct, st = np.cos(theta), np.sin(theta)
-
-        # Rotate ECEF -> ECI for position
-        x =  ct * r_ecef[0] - st * r_ecef[1]
-        y =  st * r_ecef[0] + ct * r_ecef[1]
-        z =  np.full_like(ct, r_ecef[2], dtype=float)
-        R_eci = np.vstack((x, y, z)).T                              # (n,3)
-
-        # Rotate ENU basis rows to ECI (per time)
-        def rot_row(row: np.ndarray) -> np.ndarray:
-            rx =  ct * row[0] - st * row[1]
-            ry =  st * row[0] + ct * row[1]
-            rz =  np.full_like(ct, row[2], dtype=float)
-            return np.vstack((rx, ry, rz)).T                        # (n,3)
-
-        E_eci = rot_row(E_ecef)                                     # (n,3)
-        N_eci = rot_row(N_ecef)                                     # (n,3)
-        U_eci = rot_row(U_ecef)                                     # (n,3)
+        r_eci = geodetic_to_eci(lat_rad_array, lst_rad_array, gs.h_m)  # (3,n) km
+        enu_rotation_matrix = enu_matrix(lat_rad_array, lst_rad_array) # Get the East-North-Up (ENU) basis vectors in the ECI frame   # 3x3 rows E,N,U
+        east_basis_eci, north_basis_eci, up_basis_eci = enu_rotation_matrix[0], enu_rotation_matrix[1], enu_rotation_matrix[2]             # each (3,)                      # (n,3)
 
         # Up (normal) vector in ECI: same as U_eci, normalised (should already be unit)
-        up_eci = U_eci / np.linalg.norm(U_eci, axis=1, keepdims=True)
+        up_eci = up_basis_eci / np.linalg.norm(up_basis_eci, axis=1, keepdims=True)
+
+        # TODO: Remove the above line
 
         # Ground station "velocity" in this simple model = 0 (use if you need station ECI rates later)
-        V_eci = np.zeros_like(R_eci)
+        v_eci = np.zeros_like(r_eci)
 
-        return JD, R_eci, V_eci, up_eci, E_eci, N_eci, U_eci
+        return JD, r_eci, v_eci, up_eci, east_basis_eci, north_basis_eci, up_basis_eci

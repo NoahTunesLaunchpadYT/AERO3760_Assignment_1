@@ -2,14 +2,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from utils import _sky_series_for_plot, gmst_from_jd
+from helper_time import gmst_from_jd, calendar_to_jd
 from tqdm.auto import tqdm  # at top of Simulator.py (or local import inside function)
 
 # bring in your trajectory classes
 from Trajectory import SatelliteTrajectory, GroundStationTrajectory
 from Propagator import SatellitePropagator, GroundStationPropagator
-
-
 
 class Simulator:
     """
@@ -35,17 +33,6 @@ class Simulator:
 
         self.satellite_trajectories: dict[str, SatelliteTrajectory] = {}
         self.ground_station_trajectories: dict[str, GroundStationTrajectory] = {}
-
-    # ---- timebase (JD) ----
-    @staticmethod
-    def calendar_to_jd(Y: int, M: int, D: int, h: int, m: int, s: float) -> float:
-        if Y < 1901 or Y >= 2100:
-            raise ValueError("Year must be between 1901 and 2099")
-        ut = (h + m/60 + s/3600)/24.0
-        j0 = 367*Y - int((7*(Y + int((M + 9)/12)))/4) + int((275*M)/9) + D + 1721013.5
-        jd = j0 + ut
-
-        return jd
 
     def add_satellites(self,
                     sats: dict[str, object],
@@ -149,7 +136,7 @@ class Simulator:
 
     def build_timebase(self, Y: int, M: int, D: int, h: int, m: int, s: float,
                        tf_days: float, sample_dt_s: float) -> np.ndarray:
-        jd0 = self.calendar_to_jd(Y, M, D, h, m, s)
+        jd0 = calendar_to_jd(Y, M, D, h, m, s)
         n = int(np.floor(tf_days*86400.0/sample_dt_s)) + 1
         self.JD = jd0 + np.arange(n, dtype=float) * (sample_dt_s/86400.0)
         self.start_time = (Y, M, D, h, m, s)
@@ -401,6 +388,9 @@ class Simulator:
                             "Make sure you ran GroundStationPropagator and stored these.")
 
         # Project LOS onto ENU
+
+        print(np.shape(rho), np.shape(E_eci), np.shape(N_eci), np.shape(U_eci))
+        
         e = np.einsum('ij,ij->i', rho, E_eci)  # East component
         n = np.einsum('ij,ij->i', rho, N_eci)  # North component
         u = np.einsum('ij,ij->i', rho, U_eci)  # Up component
@@ -437,6 +427,7 @@ class Simulator:
         gs_traj = self.ground_station_trajectories[gs_key]
         tracks = []
         n_frames = None
+
         for k in sat_keys:
             S = self.satellite_trajectories[k]
             az_full, el_full, _, dist_full = self._compute_az_el(gs_traj, S, return_distance=True)
@@ -502,6 +493,8 @@ class Simulator:
         ax.set_title(f"Sky track (static) from GS:{gs_key}  (elev ≥ {min_elev_deg:.0f}°)")
 
         gs_traj = self.ground_station_trajectories[gs_key]
+        
+        
         for k in sat_keys:
             S = self.satellite_trajectories[k]
             az_deg, el_deg, _, dist_km = self._compute_az_el(gs_traj, S, return_distance=True)
@@ -827,7 +820,7 @@ class Simulator:
             print(f"[DIST STATS] Fraction of total time with a visible sat ≤ {max_distance_km:.1f} km: {pct:.2f}%")
 
         # ---- Plot (3 rows) ----
-        fig, (ax1, ax2, ax3) = plt.subplots(
+        fig, (ax1, ax3, ax2) = plt.subplots(
             3, 1, figsize=fig_size, sharex=True,
             gridspec_kw={"height_ratios": [3, 2, 3]}
         )
@@ -837,7 +830,7 @@ class Simulator:
             ax1.plot(jd, per_sat[sk]["elevation_deg"], lw=1.0, label=sk)
         ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0, color="black")
         ax1.set_ylabel("Elevation [deg]")
-        ax1.set_title(f"Elevations — GS: {gs_key} (min elev {min_elev_deg:.1f}°)")
+        ax1.set_title(f"Elevations of Satellites Over Time — (min elev {min_elev_deg:.1f}°)")
         ax1.grid(True, alpha=0.3)
         ax1.legend(ncols=2, fontsize=8, loc="upper right")
 
@@ -849,7 +842,7 @@ class Simulator:
         ax2.set_yticklabels(sat_keys)
         ax2.set_ylabel("Satellite")
         visible_pct = 100.0 * (time_with_any / total_duration) if total_duration > 0 else 0.0
-        ax2.set_title(f"Visibility (interval): {visible_pct:.1f}% of time has ≥1 visible")
+        ax2.set_title(f"Visible Intervals for Each Satellite: {visible_pct:.1f}% of time there is ≥1 satellites visible")
         ax2.grid(False)
 
         # Row 3: closest visible distance
@@ -864,7 +857,7 @@ class Simulator:
                         transform=ax3.transAxes, va="top", ha="left", fontsize=9)
         ax3.set_ylabel("Range [km]")
         ax3.set_xlabel("Julian Date")
-        ax3.set_title("Closest Visible Distance")
+        ax3.set_title("Distance to Closest Satellite")
         ax3.grid(True, alpha=0.3)
 
         fig.tight_layout()
@@ -891,12 +884,14 @@ class Simulator:
         }
 
     def plot_ground_tracks_window(self, gs_key: str, sat_keys: list[str],
-                                *, step: int = 1, figsize=(10, 6), block: bool = True):
+                                *, step: int = 1, figsize=(10, 6), block: bool = True,
+                                r: float | None = None):
         """
-        Static ground tracks for multiple satellites.
+        Ground tracks (0..360° longitudes; 0° on the left).
         - Marks the ground station with a star (at its geodetic lon/lat).
         - Each satellite has a unique colour.
-        - Handles lon wrap (-180..180) with NaN segmentation to avoid spurious lines.
+        - Handles lon wrap (0..360) with NaN segmentation to avoid spurious lines.
+        - If r (degrees) is provided, draws a translucent geodesic visibility circle.
         """
         import numpy as np
         import matplotlib.pyplot as plt
@@ -907,45 +902,81 @@ class Simulator:
             if k not in self.satellite_trajectories:
                 raise KeyError(f"Satellite '{k}' not found")
 
+        # normalise longitude to [0, 360)
+        def _wrap360(lon_deg):
+            lon = (np.asarray(lon_deg) % 360.0 + 360.0) % 360.0
+            return lon
+
         fig = plt.figure(figsize=figsize)
         ax = fig.add_subplot(111)
 
         # --- helper: ECI->ECEF->(lat,lon) for a trajectory S ---
         def _eci_to_latlon(traj):
             x, y, z = traj.R[::step, 0], traj.R[::step, 1], traj.R[::step, 2]
-            theta = gmst_from_jd(self.JD[::step])               # array of angles
+            theta = gmst_from_jd(self.JD[::step])               # array of angles [rad]
             cos_t, sin_t = np.cos(theta), np.sin(theta)
             x_e =  cos_t * x + sin_t * y
             y_e = -sin_t * x + cos_t * y
             z_e =  z
-            r = np.linalg.norm(np.stack([x_e, y_e, z_e], axis=-1), axis=-1)
-            lat = np.degrees(np.arcsin(z_e / r))
+            rnorm = np.linalg.norm(np.stack([x_e, y_e, z_e], axis=-1), axis=-1)
+            lat = np.degrees(np.arcsin(z_e / rnorm))
             lon = np.degrees(np.arctan2(y_e, x_e))
-            lon = (lon + 180.0) % 360.0 - 180.0
+            lon = _wrap360(lon)          # 0..360
             return lon, lat
 
-        # --- plot each satellite with unique colour and wrap-safe segmentation ---
+        # --- plot each satellite with wrap-safe segmentation (0..360) ---
         def _plot_wrapped(lon, lat, label):
             lon = np.asarray(lon); lat = np.asarray(lat)
             dlon = np.diff(lon)
-            # break line when we jump across the map edge
+            # break line when we jump across 0/360 edge
             breaks = np.where(np.abs(dlon) > 180.0)[0] + 1
             lon_seg = lon.astype(float).copy()
             lat_seg = lat.astype(float).copy()
             lon_seg[breaks] = np.nan
             lat_seg[breaks] = np.nan
             ln, = ax.plot(lon_seg, lat_seg, lw=1.5, label=label)
-            # head marker in same colour (last point)
             ax.plot([lon[-1]], [lat[-1]], marker='o', ms=5,
                     color=ln.get_color(), linestyle='None')
             return ln
 
         # Ground station star (use its geodetic lat/lon)
-        gs = self.ground_stations[gs_key] if hasattr(self, "ground_stations") else self.ground_station_trajectories[gs_key]
+        gs = (self.ground_stations[gs_key]
+            if hasattr(self, "ground_stations") else
+            self.ground_station_trajectories[gs_key])
         gs_lat = float(getattr(gs, "lat_deg", None) if hasattr(gs, "lat_deg") else gs.lat_deg)
         gs_lon = float(getattr(gs, "lon_deg", None) if hasattr(gs, "lon_deg") else gs.lon_deg)
-        gs_lon = (gs_lon + 180.0) % 360.0 - 180.0
+        gs_lon = float(_wrap360(gs_lon))
         ax.plot([gs_lon], [gs_lat], marker='*', ms=12, color='k', label=f"GS:{gs_key}")
+
+        # Optional visibility circle (geodesic, radius r degrees)
+        if r is not None and r > 0:
+            phi1 = np.radians(gs_lat)
+            lam1 = np.radians(gs_lon)
+            delta = np.radians(r)
+            bearings = np.linspace(0.0, 2.0*np.pi, 361)
+
+            sin_phi1, cos_phi1 = np.sin(phi1), np.cos(phi1)
+            sin_d, cos_d = np.sin(delta), np.cos(delta)
+
+            # Great-circle destination formula
+            lat_c = np.arcsin(sin_phi1 * cos_d + cos_phi1 * sin_d * np.cos(bearings))
+            lon_c = lam1 + np.arctan2(np.sin(bearings) * sin_d * cos_phi1,
+                                    cos_d - sin_phi1 * np.sin(lat_c))
+
+            lat_c = np.degrees(lat_c)
+            lon_c = _wrap360(np.degrees(lon_c))
+
+            # Split polygon at 0/360 to avoid a long wrap
+            dlon = np.diff(lon_c)
+            breaks = np.where(np.abs(dlon) > 180.0)[0] + 1
+            lon_fill = lon_c.astype(float).copy()
+            lat_fill = lat_c.astype(float).copy()
+            lon_fill[breaks] = np.nan
+            lat_fill[breaks] = np.nan
+
+            ax.fill(lon_fill, lat_fill, alpha=0.12, color='C0',
+                    edgecolor='C0', linewidth=1.0, linestyle='--',
+                    label=f"Visibility r={r:.1f}°")
 
         # Satellites
         for k in sat_keys:
@@ -955,10 +986,50 @@ class Simulator:
 
         ax.set_xlabel("Longitude [deg]")
         ax.set_ylabel("Latitude [deg]")
-        ax.set_title("Ground tracks (approx)")
-        ax.set_xlim([-180, 180]); ax.set_ylim([-90, 90])
+        if len(sat_keys) > 1:
+            title = "Ground tracks"
+        else:
+            title = "Ground track"
+        ax.set_title(title)
+        ax.set_xlim([0, 360]); ax.set_ylim([-90, 90])
+        ax.set_xticks([0, 60, 120, 180, 240, 300, 360])
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper right', fontsize=8)
         fig.tight_layout()
         plt.show(block=block)
         return fig
+
+def _sky_series_for_plot(az_deg, el_deg, dist_km, *, min_elev_deg, distance_thresh_km):
+        """
+        Build sky-track series for polar plotting.
+        Returns theta_solid, r_solid, theta_dotted, r_dotted, vis_mask, theta_raw, r_raw
+        where:
+        - solid = visible AND dist <= threshold
+        - dotted = visible AND dist  > threshold
+        Segmentation (NaN) applied ONLY where not visible (el < min_elev_deg).
+        No NaNs added for azimuth wraps.
+        """
+        az_deg = np.asarray(az_deg)
+        el_deg = np.asarray(el_deg)
+        dist_km = np.asarray(dist_km)
+
+        # polar: theta in radians, radius as elevation (0 at centre = zenith, but we'll invert r-limits)
+        theta = np.deg2rad(az_deg)
+        r = el_deg  # we'll set rlim(90, 0) so 90° outer, 0° inner
+
+        visible = np.isfinite(el_deg) & (el_deg >= float(min_elev_deg))
+        near = visible & (dist_km <= float(distance_thresh_km))
+        far  = visible & (dist_km >  float(distance_thresh_km))
+
+        # Apply NaN ONLY where not visible
+        theta_solid = theta.copy()
+        r_solid = r.copy()
+        theta_solid[~near] = np.nan
+        r_solid[~near] = np.nan
+
+        theta_dotted = theta.copy()
+        r_dotted = r.copy()
+        theta_dotted[~far] = np.nan
+        r_dotted[~far] = np.nan
+
+        return theta_solid, r_solid, theta_dotted, r_dotted, visible, theta, r

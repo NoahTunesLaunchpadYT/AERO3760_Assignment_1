@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt 
-from utils import *
-from utils import R_EARTH, OMEGA_E, MU_EARTH
+from helper_time import gmst_from_jd
+from helper_constants import R_EARTH
 # ----------------- Trajectory -----------------
 class Trajectory:
     """

@@ -3,10 +3,10 @@ from Satellite import Satellite
 from GroundStation import GroundStation
 from Simulator import Simulator
 from Propagator import SatellitePropagator, GroundStationPropagator
-from search import grid_search_2d, refine_2d_generic
-import time
-from utils import _wrap_deg
 import numpy as np
+
+def _wrap_deg(v: float, base: float = 0.0) -> float:
+    return (float(v) - base) % 360.0 + base
 
 def main():
     # Calendar Day
@@ -24,13 +24,15 @@ def main():
 
     e=0.0
     a_km=11504
-    inc_deg=48.529292
+    # a_km=12020.408
+    inc_deg=49
     aop_deg=270
     raan_deg=0.0
-    ta_deg=182.0
+    # ta_deg=189.0 
+    ta_deg = 182.0
 
     # Propagators
-    sat_prop = SatellitePropagator(method="DOP853", rtol=1e-9, atol=1e-11, max_step=100.0)
+    sat_prop = SatellitePropagator(method="RK45", rtol=1e-9, atol=1e-11, max_step=100.0) # or DOP853
     gs_prop  = GroundStationPropagator()
 
     # Ground station: Sydney, ~50 m altitude
@@ -41,13 +43,13 @@ def main():
 
     # Start: 2026-01-11 12:00:00 UTC, run 2 hours at 30 s steps
     sim.build_timebase(Y=Y, M=M, D=D, h=h, m=m, s=s,
-                       tf_days=3, sample_dt_s=100.0)
+                       tf_days=23.877/24, sample_dt_s=100.0)
 
     # Build timebase, add your GS (e.g., "Sydney"), then:
     opt = VisibilityOptimiser(sim)
 
-    # # print("Optimising visibility for Sydney ground station...")
-    # def f(a_km, inc_deg):
+    # # # print("Optimising visibility for Sydney ground station...")
+    # def f(ta_deg, inc_deg):
     #     return opt.visibility_pct_objective(
     #         e=e,
     #         ta_deg=ta_deg,
@@ -63,8 +65,8 @@ def main():
     
     # best_rec, _, _ = grid_search_2d(
     #     func=f,
-    #     x_range=(11000, 13000), n_x=10, x_is_angle=False,
-    #     y_range=(30, 55), n_y=10, y_is_angle=True,
+    #     x_range=(180, 190), n_x=2, x_is_angle=True,
+    #     y_range=(48, 53), n_y=2, y_is_angle=True,
     #     return_figure=True,
     #     x_label="Semi-major Axis (km)",
     #     y_label="Inclination (deg)",
@@ -75,7 +77,8 @@ def main():
     best = {'key': 'custom', 
         'params': {'a_km': a_km, 'e': e, 'ta_deg': ta_deg, 'raan_deg': raan_deg, 'inc_deg': inc_deg, 'aop_deg': aop_deg},
         'gs_key': 'Sydney',
-        'percent_visible': 25.954492865406866}
+        'percent_visible': 25.954492865406866
+    }
 
     # opt.create_and_set_best_satellite(best)
 
@@ -113,7 +116,7 @@ def main():
         raan_i = _wrap_deg(raan0 + i * dRAAN, 0.0)
         ta_i   = _wrap_deg(ta0   - i * dTA,   0.0)
 
-        key = f"plane0_sat{i:02d}"
+        key = f"sat{i:02d}"
         sat_keys.append(key)
 
         # Construct the satellite (use whichever constructor your class supports)
@@ -125,12 +128,23 @@ def main():
         # Add to the simulator (pick the correct method for your API)
         sim.satellites[key] = sat
 
+    # ===== Print orbital parameters for each satellite =====
+    print("\nConstellation orbital parameters (Keplerian):")
+    print(f"{'Key':<6} {'a_km':>10} {'e':>8} {'inc_deg':>10} {'RAAN_deg':>10} {'AOP_deg':>10} {'TA_deg':>10}")
+    print("-" * 68)
+
+    for i, key in enumerate(sat_keys):
+        # Recompute the parameters exactly as used during creation
+        raan_i = (raan0 + i * dRAAN) % 360.0
+        ta_i   = (ta0   - i * dTA)   % 360.0
+        print(f"{key:<6} {a_km:10.3f} {e:8.5f} {inc:10.5f} {raan_i:10.5f} {aop:10.5f} {ta_i:10.5f}")
+
     sim.run_all(sat_keys=sat_keys)
     # ==============================
     # Plot constellation results
     # ==============================
 
-    sim.plot_ground_tracks_window(gs_key="Sydney", sat_keys=[sat_keys[0]], step=1)
+    sim.plot_ground_tracks_window(gs_key="Sydney", sat_keys=[sat_keys[0]], r=31, step=1)
     res_dict = sim.plot_elevation_visibility_distance(
         gs_key="Sydney",
         sat_keys=sat_keys,
@@ -138,7 +152,7 @@ def main():
         max_distance_km=max_distance
     )
 
-    mask = res_dict["per_sat"]["plane0_sat00"]["visible"]
+    mask = res_dict["per_sat"]["sat00"]["visible"]
     np.save("mask.npy", mask)
 
     sim.plot_all_five(
