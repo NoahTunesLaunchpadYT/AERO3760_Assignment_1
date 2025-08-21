@@ -162,14 +162,18 @@ class Simulator:
             # Ground stations
             for k in g_keys:
                 gs = self.ground_stations[k]
-                JDg, Rg, Vg, up_eci, E_eci, N_eci, U_eci = self.gs_prop.propagate(gs, JD)
+                JDg, Rg, Vg, E_eci, N_eci, U_eci = self.gs_prop.propagate(gs, JD)
+                   
+                
                 gtraj = GroundStationTrajectory(
                     JDg, Rg, Vg, self.start_time or (0, 0, 0, 0, 0, 0.0),
                     name=f"GS:{k}", enu_vectors=U_eci
                 )
+
                 # optional caches
-                gtraj.up_vectors = up_eci
-                gtraj.E_eci = E_eci; gtraj.N_eci = N_eci; gtraj.U_eci = U_eci
+                gtraj.E_eci = E_eci
+                gtraj.N_eci = N_eci
+                gtraj.U_eci = U_eci
                 self.ground_station_trajectories[k] = gtraj
 
                 if pbar:

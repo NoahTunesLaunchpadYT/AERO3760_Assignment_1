@@ -75,19 +75,16 @@ class GroundStationPropagator(Propagator):
         """
         JD = np.asarray(jd_array, float)            # Array
         gmst_rad = gmst_from_jd(JD)                 # Array
-        lst_rad_array = gmst_rad + np.radians(gs.lon_deg) # Array
-        lat_rad_array = np.full_like(lst_rad_array, np.radians(gs.lat_deg))
+        lst_deg_array = np.degrees(gmst_rad) + gs.lon_deg # Array
+        lat_deg_array = np.full_like(lst_deg_array, gs.lat_deg)
 
-        r_eci = geodetic_to_eci(lat_rad_array, lst_rad_array, gs.h_m)  # (3,n) km
-        enu_rotation_matrix = enu_matrix(lat_rad_array, lst_rad_array) # Get the East-North-Up (ENU) basis vectors in the ECI frame   # 3x3 rows E,N,U
-        east_basis_eci, north_basis_eci, up_basis_eci = enu_rotation_matrix[0], enu_rotation_matrix[1], enu_rotation_matrix[2]             # each (3,)                      # (n,3)
-
-        # Up (normal) vector in ECI: same as U_eci, normalised (should already be unit)
-        up_eci = up_basis_eci / np.linalg.norm(up_basis_eci, axis=1, keepdims=True)
-
-        # TODO: Remove the above line
+        r_eci = geodetic_to_eci(lat_deg_array, lst_deg_array, gs.h_m).T  # (3,n) km
+        enu_rotation_matrix = enu_matrix(lat_deg_array, lst_deg_array) # Get the East-North-Up (ENU) basis vectors in the ECI frame   # 3x3 rows E,N,U
+        east_basis_eci  = enu_rotation_matrix[:, 0, :]  # shape (N,3)
+        north_basis_eci = enu_rotation_matrix[:, 1, :]  # shape (N,3)
+        up_basis_eci    = enu_rotation_matrix[:, 2, :]  # shape (N,3)
 
         # Ground station "velocity" in this simple model = 0 (use if you need station ECI rates later)
         v_eci = np.zeros_like(r_eci)
 
-        return JD, r_eci, v_eci, up_eci, east_basis_eci, north_basis_eci, up_basis_eci
+        return JD, r_eci, v_eci, east_basis_eci, north_basis_eci, up_basis_eci

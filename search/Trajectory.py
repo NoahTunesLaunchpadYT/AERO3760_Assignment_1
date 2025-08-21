@@ -261,6 +261,7 @@ class GroundStationTrajectory(Trajectory):
         enu_vectors: list[list[float]] | np.ndarray | None = None,
     ) -> None:
         super().__init__(jd_array, R_km, V_km_s, start_time, name or "ground_station")
+
         self.enu_vectors = None
         if enu_vectors is not None:
             self.enu_vectors = np.array(enu_vectors, dtype=float).reshape(-1, 3)

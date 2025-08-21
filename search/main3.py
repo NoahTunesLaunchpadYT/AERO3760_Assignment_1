@@ -140,6 +140,7 @@ def main():
         print(f"{key:<6} {a_km:10.3f} {e:8.5f} {inc:10.5f} {raan_i:10.5f} {aop:10.5f} {ta_i:10.5f}")
 
     sim.run_all(sat_keys=sat_keys)
+
     # ==============================
     # Plot constellation results
     # ==============================
