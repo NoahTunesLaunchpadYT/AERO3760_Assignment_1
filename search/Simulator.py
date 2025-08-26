@@ -560,6 +560,7 @@ class Simulator:
             raise KeyError(f"Ground station '{gs_key}' not found")
         for k in sat_keys:
             if k not in self.satellite_trajectories:
+                print(self.satellite_trajectories.keys())
                 raise KeyError(f"Satellite '{k}' not found")
 
         gs_traj = self.ground_station_trajectories[gs_key]

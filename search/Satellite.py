@@ -15,8 +15,6 @@ class Satellite:
     @classmethod
     def from_keplerian(cls, a_km, e, inc_deg, raan_deg, aop_deg, ta_deg, mu=MU_EARTH):
         r, v = kepler_to_rv(a_km, e, inc_deg, raan_deg, aop_deg, ta_deg, mu)
-        print(f"Created satellite from Keplerian elements: a={a_km}, e={e}, inc={inc_deg}, raan={raan_deg}, aop={aop_deg}, ta={ta_deg}")
-        print(f"Resulting position (r): {r}, velocity (v): {v}")
         return cls((r, v))
 
     @classmethod

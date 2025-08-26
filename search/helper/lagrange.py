@@ -33,9 +33,12 @@ def lagrange_coefficients_universal(
     # -------------------- Calculate the Lagrange Coefficients
     Sz = stumpff_S(z)
     Cz = stumpff_C(z)
+    print(f"[Lambert]: Sz: {Sz}, Cz: {Cz}")
+    print(f"[Lambert]: {(z*Sz - 1) / np.sqrt(Cz)}")
+    print(f"[Lambert]: {np.sqrt((z*Sz - 1) / np.sqrt(Cz))}")
 
     A = np.sin(delta_theta) * np.sqrt(r1_mag * r2_mag / (1 - np.cos(delta_theta)))
-    y = r1_mag + r2_mag + A * np.sqrt((z*Sz - 1) / np.sqrt(Cz))
+    y = r1_mag + r2_mag + A * (z*Sz - 1) / np.sqrt(Cz)
 
     f = 1 - y / r1_mag
     g = A * np.sqrt(y) / np.sqrt(mu)
@@ -112,7 +115,7 @@ def universal_variable_from_r(
         delta_theta = 2 * np.pi - np.arccos(np.clip(np.dot(r1, r2) / (r1_mag * r2_mag), -1.0, 1.0))
 
     # -------------------- Compute the Universal Anomaly
-    A = np.sin(delta_theta) * np.sqrt(r1_mag * r2_mag * (1 - np.cos(delta_theta)))
+    A = np.sin(delta_theta) * np.sqrt(r1_mag * r2_mag / (1 - np.cos(delta_theta)))
 
     # Note: The following three functions are called inner (or nested) functions
     def y_func(z: float) -> float:
@@ -139,7 +142,7 @@ def universal_variable_from_r(
         if z == 0:
             return np.sqrt(2) / 40 * y**(3/2) + (A/8)*(np.sqrt(y) + A * np.sqrt(1/(2*np.sqrt(y))))
         else:
-            return (y / Cz) ** (3/2) * (1 / 2*z * (Cz - 3/2 * Sz/Cz) + 3/4 * Sz**2/Cz) + A/8 * (3 * Sz/Cz * np.sqrt(y) + A * np.sqrt(Cz / y))
+            return (y / Cz) ** (3/2) * (1 / (2*z) * (Cz - 3/2 * Sz/Cz) + 3/4 * Sz**2/Cz) + A/8 * (3 * Sz/Cz * np.sqrt(y) + A * np.sqrt(Cz / y))
 
     # Initial guess for the universal variable
     z = 0
@@ -147,6 +150,7 @@ def universal_variable_from_r(
     update = 1
 
     while abs(update) > tolerance:
+        print(f"[Lambert]: z: {z}")
         update = F(z) / dFdz(z)
         z = z - update
     

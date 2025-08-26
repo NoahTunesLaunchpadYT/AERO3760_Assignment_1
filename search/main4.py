@@ -81,13 +81,13 @@ def main():
 
     od_solver = OrbitDeterminationSolver()
     predict_sat1 = od_solver.determine_orbit(gs, observables=range_obs, method="Gibbs")
-    # predict_sat2 = od_solver.determine_orbit(gs, observables=radio_obs, method="Lambert")
+    predict_sat2 = od_solver.determine_orbit(gs, observables=radio_obs, method="Lambert")
     # predict_sat3 = od_solver.determine_orbit(gs, observables=optical_obs, method="Gauss")
 
-    sim.add_satellites({"sat1_predict": predict_sat1})
+    sim.add_satellites({"sat1_predict": predict_sat1, "sat2_predict": predict_sat2})
     
     sim.run_all()
-    sim.plot_all_five(gs_key="NewCastle", sat_keys=["sat0", "sat1_predict"], step=5)
+    sim.plot_all_five(gs_key="NewCastle", sat_keys=["sat0", "sat1_predict", "sat2_predict"], step=5)
 
 if __name__ == "__main__":
     main()

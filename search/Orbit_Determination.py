@@ -4,9 +4,11 @@ from helper.coordinate_transforms import az_el_sat_from_gs, ENU_from_az_el_rng, 
 from helper.time import gmst_from_jd
 from helper.constants import MU_EARTH as mu
 from helper.constants import R_EARTH
+from helper.plotting import set_axis_limits_from_points
 from helper.lagrange import lagrange_coefficients_universal, universal_variable_from_r
 from Satellite import Satellite
 from dataclasses import dataclass
+
 
 from matplotlib import pyplot as plt
 
@@ -42,7 +44,6 @@ class SatelliteLaserRanging(Sensor):
             az = np.interp(jd_time, sat_trajectory.JD, az_arr)
             el = np.interp(jd_time, sat_trajectory.JD, el_arr)
             rng_km = np.interp(jd_time, sat_trajectory.JD, rng_km_arr)
-            print(f"[SatelliteLaserRanging] Range (km): {rng_km}")
 
             obs = Observation(jd=jd_time, kind="az_el_rng", values=np.array([az, el, rng_km]))
             observations.append(obs)
@@ -155,11 +156,7 @@ class GibbsObservables:
         ax.set_zlabel("ECI Z [km]")
         ax.set_title("Gibbs Observables — ECI Position Vectors")
 
-        # Set symmetric limits and roughly equal aspect
-        pad = 0.1 * lim
-        ax.set_xlim([-lim - pad, lim + pad])
-        ax.set_ylim([-lim - pad, lim + pad])
-        ax.set_zlim([-lim - pad, lim + pad])
+        set_axis_limits_from_points(ax, [self.r1_eci_km, self.r2_eci_km, self.r3_eci_km])
 
         ax.legend(loc="upper left", fontsize=9)
 
@@ -197,29 +194,34 @@ class ObservationReducer:
 
         r_list, t_list = [], []
         for o in obs3:
+            # Timnig
             jd = o.jd
             gmst_rad = gmst_from_jd(jd)
+
+            # LLA
             lst_deg = np.degrees(gmst_rad) + gs.lon_deg
             lat_deg = gs.lat_deg
+
+            # Ground Station ECI
             r_gs_eci = geodetic_to_eci(lat_deg, lst_deg, gs.h_m)  # (3,n) km
             R_ENU_ECI = enu_matrix(lat_deg, lst_deg).T   # 3×3
+            
+            # Satelite ENU
             az_deg, el_deg, rng_km = o.values
-            print(f"[ObservationReducer] jd: {jd}, gmst_rad: {gmst_rad}, lst_deg: {lst_deg}, lat_deg: {lat_deg}, R_ENU_ECI: {R_ENU_ECI}, az_deg: {az_deg}, el_deg: {el_deg}, rng_km: {rng_km}")
             q_ENU = ENU_from_az_el_rng(az_deg, el_deg, rng_km)
-            print(f"[ObservationReducer] r_ENU: {q_ENU}")
+
+            # Satellite ECI
             q_ECI = R_ENU_ECI @ q_ENU
             r_eci = r_gs_eci + q_ECI
-            print(f"[ObservationReducer] r_eci: {r_eci}")
+
+            # Adding to lists
             r_list.append(r_eci)
             t_list.append(jd)
 
-            print(f"[ObservationReducer] rng_km: {rng_km}, r_ENU: {q_ENU}, r_list: {r_list}")
         return GibbsObservables(r1_eci_km=r_list[0], r2_eci_km=r_list[1], r3_eci_km=r_list[2],
                                 t1_jd=t_list[0], t2_jd=t_list[1], t3_jd=t_list[2])
 
     def for_lambert(self, gs, observables: list[Observation]) -> LambertObservables:
-        print("WWEEEE")
-        print([o.kind for o in observables])
         obs2 = sorted([o for o in observables if o.kind == "az_el_rng_time"], key=lambda o:o.jd)[:2]
 
         if len(obs2) < 2:
@@ -229,14 +231,28 @@ class ObservationReducer:
         dt_s = (obs2[1].jd - obs2[0].jd) * 86400.0
 
         for o in obs2:
+            # Timing
             jd = o.jd
             gmst_rad = gmst_from_jd(jd)
+
+            # LLA
             lst_deg = np.degrees(gmst_rad) + gs.lon_deg
             lat_deg = gs.lat_deg
-            R_ENU_ECI = enu_matrix(lat_deg, lst_deg)   # 3×3
+
+            # Ground Station ECI
+            r_gs_eci = geodetic_to_eci(lat_deg, lst_deg, gs.h_m)  # (3,n) km
+            R_ENU_ECI = enu_matrix(lat_deg, lst_deg).T   # 3×3
+
+            # Satellite ENU
             az_deg, el_deg, rng_km, _ = o.values
-            r_ENU = ENU_from_az_el_rng(az_deg, el_deg, rng_km)
-            r_list.append(R_ENU_ECI @ r_ENU)
+            q_ENU = ENU_from_az_el_rng(az_deg, el_deg, rng_km)
+
+            # Satellite ECI
+            q_ECI = R_ENU_ECI @ q_ENU
+            r_eci = r_gs_eci + q_ECI
+
+            # Adding to lists
+            r_list.append(r_eci)
             t_list.append(jd)
 
         return LambertObservables(r_list[0], r_list[1], dt_s, obs2[0].jd, obs2[1].jd)
@@ -339,14 +355,23 @@ class OrbitDeterminationSolver:
         r1 = observables.r1_eci_km
         r2 = observables.r2_eci_km
         dt = observables.dt_seconds
+        print(f"[Lambert]: r1: {r1}, r2: {r2}, dt: {dt}")
 
-        is_prograde = np.dot(np.cross(r1, r2), r2) > 0
+        is_prograde = np.cross(r1, r2)[2] > 0
+
+        print(f"[Lambert]: is_prograde: {is_prograde}")
 
         z = universal_variable_from_r(r1, r2, dt, mu, is_prograde)
+
+        print(f"[Lambert]: z: {z}")
         f, g, fdot, gdot = lagrange_coefficients_universal(r1, r2, mu, z, is_prograde)
+
+        print(f"[Lambert]: f: {f}, g: {g}, fdot: {fdot}, gdot: {gdot}")
 
         v1 = 1 / g * (r2 - f * r1)
         v2 = 1 / g * (gdot * r2 - r1)
+
+        print(f"[Lambert]: v1: {v1}, v2: {v2}")
 
         return r2, v2
 
