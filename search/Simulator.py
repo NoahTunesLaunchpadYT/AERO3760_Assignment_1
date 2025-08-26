@@ -2,8 +2,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from helper_time import gmst_from_jd, calendar_to_jd
+from helper.time import gmst_from_jd, calendar_to_jd
 from tqdm.auto import tqdm  # at top of Simulator.py (or local import inside function)
+from helper.coordinate_transforms import az_el_sat_from_gs
+from helper.plotting import set_axis_limits_from_points
 
 # bring in your trajectory classes
 from Trajectory import SatelliteTrajectory, GroundStationTrajectory
@@ -183,9 +185,29 @@ class Simulator:
             # Satellites
             for k in s_keys:
                 sat = self.satellites[k]
-                JDs, Rs, Vs = self.sat_prop.propagate(sat, JD)
+                start_jd = sat.start_jd
+                if start_jd is None:
+                    start_jd = JD[0]
+                
+                # indices where this sat is active
+                active_mask = JD >= start_jd
+                if not np.any(active_mask):
+                    # nothing to do for this sat on this timebase
+                    continue
+
+                # Propagate only over the active tail
+                JDa = JD[active_mask]
+                JDa, Ra, Va = self.sat_prop.propagate(sat, JDa)  # unchanged propagator
+
+                # Stitch back into global arrays
+                n = JD.size
+                R = np.full((n, 3), np.nan)
+                V = np.full((n, 3), np.nan)
+                R[active_mask] = Ra
+                V[active_mask] = Va
+                
                 straj = SatelliteTrajectory(
-                    JDs, Rs, Vs, self.start_time or (0, 0, 0, 0, 0, 0.0),
+                    JD, R, V, self.start_time or (0, 0, 0, 0, 0, 0.0),
                     name=f"SAT:{k}"
                 )
                 self.satellite_trajectories[k] = straj
@@ -248,13 +270,8 @@ class Simulator:
         all_R = []
         for k in g_keys: all_R.append(self.ground_station_trajectories[k].R)
         for k in s_keys: all_R.append(self.satellite_trajectories[k].R)
-        all_R = np.vstack(all_R) if all_R else np.zeros((1,3))
-        xs, ys, zs = all_R[:,0], all_R[:,1], all_R[:,2]
-        max_range = np.array([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]).max()
-        mid = np.array([xs.mean(), ys.mean(), zs.mean()])
-        ax.set_xlim(mid[0]-0.5*max_range, mid[0]+0.5*max_range)
-        ax.set_ylim(mid[1]-0.5*max_range, mid[1]+0.5*max_range)
-        ax.set_zlim(mid[2]-0.4*max_range, mid[2]+0.4*max_range)
+
+        set_axis_limits_from_points(ax, all_R)
 
         ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
         ax.set_title('ECI trajectories (3D)')
@@ -283,13 +300,6 @@ class Simulator:
         if not series:
             raise RuntimeError("No trajectories to animate. Run the simulator first.")
 
-        # Determine axis limits from all paths
-        all_R = np.vstack([R for _, R in series])
-        xs, ys, zs = all_R[:,0], all_R[:,1], all_R[:,2]
-
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-
         # Earth
         Re = globals().get('R_EARTH', 6378.1363)
         u = np.linspace(0, 2*np.pi, 60)
@@ -307,12 +317,14 @@ class Simulator:
             pt   = ax.plot([], [], [], marker='o', markersize=4, animated=False)[0]
             lines.append(ln); points.append(pt)
 
-        # Fixed scaling style (0.4 on z)
-        max_range = np.array([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]).max()
-        mid = np.array([xs.mean(), ys.mean(), zs.mean()])
-        ax.set_xlim(mid[0]-0.5*max_range, mid[0]+0.5*max_range)
-        ax.set_ylim(mid[1]-0.5*max_range, mid[1]+0.5*max_range)
-        ax.set_zlim(mid[2]-0.4*max_range, mid[2]+0.4*max_range)
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Determine axis limits from all paths
+        all_R = np.vstack([R for _, R in series])
+
+        set_axis_limits_from_points(ax, [all_R])
+
         ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
         ax.set_title('ECI trajectories (animated)')
         ax.legend(loc='upper right', fontsize=8)
@@ -359,61 +371,6 @@ class Simulator:
         plt.show()
         return ani
     
-    def _compute_az_el(self, gs_traj, sat_traj, return_distance=False):
-        """
-        Compute azimuth/elevation of a satellite as seen from a ground station,
-        using the station's time-varying ENU basis in ECI.
-
-        Args:
-            gs_traj: Ground station trajectory with attributes JD, R, E_eci, N_eci, U_eci
-            sat_traj: Satellite trajectory with attributes JD, R
-            return_distance (bool): If True, also return the satellite-ground
-                                    distance (same length as az/el arrays).
-
-        Returns:
-            az_deg (n,), el_deg (n,), vis_mask (n,) 
-            If return_distance=True, also returns:
-            distance_m (n,)
-        """
-        # Ensure same time base length
-        if gs_traj.JD.shape[0] != sat_traj.JD.shape[0]:
-            raise ValueError("GS and SAT trajectories must be sampled on the same JD grid")
-
-        Rg = gs_traj.R                    # (n,3)
-        Rs = sat_traj.R                   # (n,3)
-        rho = Rs - Rg                     # LOS in ECI (n,3)
-
-        # Local ENU basis in ECI
-        E_eci = getattr(gs_traj, 'E_eci', None)
-        N_eci = getattr(gs_traj, 'N_eci', None)
-        U_eci = getattr(gs_traj, 'U_eci', None)
-        if E_eci is None or N_eci is None or U_eci is None:
-            raise RuntimeError("GroundStationTrajectory is missing E_eci/N_eci/U_eci. "
-                            "Make sure you ran GroundStationPropagator and stored these.")
-
-        # Project LOS onto ENU
-
-        print(np.shape(rho), np.shape(E_eci), np.shape(N_eci), np.shape(U_eci))
-        
-        e = np.einsum('ij,ij->i', rho, E_eci)  # East component
-        n = np.einsum('ij,ij->i', rho, N_eci)  # North component
-        u = np.einsum('ij,ij->i', rho, U_eci)  # Up component
-
-        # Azimuth measured from North toward East
-        az = np.degrees(np.arctan2(e, n))      # [-180, 180]
-        az = (az + 360.0) % 360.0
-
-        # Elevation and range
-        rho_norm = np.linalg.norm(rho, axis=1)
-        el = np.degrees(np.arcsin(np.clip(u / rho_norm, -1.0, 1.0)))
-
-        vis = el >= 0.0
-
-        if return_distance:
-            return az, el, vis, rho_norm
-        else:
-            return az, el, vis
-
     def plot_sky_anim_window(self, gs_key: str, sat_keys: list[str],
                             *, step=1, interval=40, tailsky=None, repeat=True,
                             min_elev_deg=0.0, distance_thresh_km=np.inf,
@@ -434,7 +391,7 @@ class Simulator:
 
         for k in sat_keys:
             S = self.satellite_trajectories[k]
-            az_full, el_full, _, dist_full = self._compute_az_el(gs_traj, S, return_distance=True)
+            az_full, el_full, _, dist_full = az_el_sat_from_gs(gs_traj, S, return_distance=True)
             az = az_full[::step]; el = el_full[::step]; dist = dist_full[::step]
 
             th_s, r_s, th_d, r_d, vis, th_raw, r_raw = _sky_series_for_plot(
@@ -501,7 +458,7 @@ class Simulator:
         
         for k in sat_keys:
             S = self.satellite_trajectories[k]
-            az_deg, el_deg, _, dist_km = self._compute_az_el(gs_traj, S, return_distance=True)
+            az_deg, el_deg, _, dist_km = az_el_sat_from_gs(gs_traj, S, return_distance=True)
 
             th_s, r_s, th_d, r_d, vis, th_raw, r_raw = _sky_series_for_plot(
                 az_deg, el_deg, dist_km, min_elev_deg=min_elev_deg,
@@ -540,7 +497,6 @@ class Simulator:
         for k, S in sats.items():
             series3d.append(("SAT:"+k, S.R[::step]))
         all_R3d = np.vstack([R for _, R in series3d])
-        xs3d, ys3d, zs3d = all_R3d[:,0], all_R3d[:,1], all_R3d[:,2]
 
         lines3d, pts3d = [], []
         for name, _ in series3d:
@@ -555,13 +511,8 @@ class Simulator:
                         animated=True)
             lines3d.append(ln); pts3d.append(pt)
 
-        max_range3d = np.array([xs3d.max()-xs3d.min(),
-                                ys3d.max()-ys3d.min(),
-                                zs3d.max()-zs3d.min()]).max()
-        mid3d = np.array([xs3d.mean(), ys3d.mean(), zs3d.mean()])
-        ax.set_xlim(mid3d[0]-0.5*max_range3d, mid3d[0]+0.5*max_range3d)
-        ax.set_ylim(mid3d[1]-0.5*max_range3d, mid3d[1]+0.5*max_range3d)
-        ax.set_zlim(mid3d[2]-0.4*max_range3d, mid3d[2]+0.4*max_range3d)
+        set_axis_limits_from_points(ax, [all_R3d])
+
         ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
         ax.set_title('ECI trajectories — animated')
         ax.legend(loc='upper right', fontsize=8)
@@ -596,17 +547,16 @@ class Simulator:
         plt.show(block=block)
         return fig, ani
 
-
     def plot_eci_static_window(self, gs_key: str, sat_keys: list[str],
                             *, figsize=(8, 6), show_earth=True,
                             earth_alpha=0.15, earth_wire=True, wire_steps=24, block=True):
         import numpy as np
         fig = plt.figure(figsize=figsize)
         ax = fig.add_subplot(111, projection='3d')
-
+        
         if self.JD is None:
             raise ValueError("Build the timebase and run the simulator first.")
-        if gs_key not in self.ground_station_trajectories:
+        if gs_key not in self.ground_station_trajectories.keys():
             raise KeyError(f"Ground station '{gs_key}' not found")
         for k in sat_keys:
             if k not in self.satellite_trajectories:
@@ -646,12 +596,9 @@ class Simulator:
             all_R.append(R)
 
         all_R = np.vstack(all_R)
-        xs, ys, zs = all_R[:,0], all_R[:,1], all_R[:,2]
-        max_range = np.array([xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min()]).max()
-        mid = np.array([xs.mean(), ys.mean(), zs.mean()])
-        ax.set_xlim(mid[0]-0.5*max_range, mid[0]+0.5*max_range)
-        ax.set_ylim(mid[1]-0.5*max_range, mid[1]+0.5*max_range)
-        ax.set_zlim(mid[2]-0.4*max_range, mid[2]+0.4*max_range)
+
+        set_axis_limits_from_points(ax, [all_R])
+        
         ax.set_xlabel('x [km]'); ax.set_ylabel('y [km]'); ax.set_zlabel('z [km]')
         ax.set_title('ECI trajectories (3D) — static')
         ax.legend(loc='upper right', fontsize=8)
@@ -694,175 +641,90 @@ class Simulator:
 
         return (fig1, fig2, fig3, fig4, fig5), (ani2, ani4)
 
-    def plot_elevation_visibility_distance(self,
-                                        gs_key: str,
-                                        *,
-                                        sat_keys: list[str] | tuple[str, ...],
-                                        min_elev_deg: float = 0.0,
-                                        max_distance_km: float | None = None,
-                                        show_all_distances: bool = True,
-                                        fig_size: tuple[float, float] = (12, 9),
-                                        save_plot_path: str | None = None):
+    def plot_sat_az_el_rng_vis(
+        self,
+        gs_key: str,
+        sat_keys: list[str],
+        *,
+        min_elev_deg: float = 0.0,
+        max_distance_km: float | None = None,
+        max_elev_deg: float | None = None,     # requested in your note (optional; plotting aid)
+        show_azimuth: bool = True,
+        show_elevation: bool = True,
+        show_range: bool = True,
+        show_visibility: bool = True,
+        fig_size: tuple[float, float] = (6, 5),
+        block: bool = True,
+        save_plot_path: str | None = None,
+    ):
         """
-        One-stop plot with three rows:
-        (1) Overlapping elevations for all satellites (with min-elev line)
-        (2) Visibility raster (time on x, satellite on y; 1=visible)
-        (3) Closest *visible* distance vs time (NaN when none visible), with optional threshold
+        Compute azimuth/elevation/range for multiple satellites from one ground station,
+        derive visibility from (elev >= min_elev_deg) & (range <= max_distance_km if provided),
+        then render up to 4 subplots with persistent per-satellite colours.
 
-        Also logs:
-        - total time with ≥1 satellite visible
-        - average number of satellites visible (duration-weighted)
-        - visible time per satellite
-        - portion of time when a visible satellite is within `max_distance_km` (if provided)
-
-        Returns:
-        dict with:
-            'jd'                 : (n,) JD
-            'count_visible'      : (n-1,) # visible per interval
-            'closest_visible_km' : (n,)   min distance among visible sats (NaN if none)
-            'chosen_sat'         : (n,)   satellite key chosen at each sample or None
-            'per_sat'            : { key: {'elevation_deg': (n,), 'visible': (n,), 'distance_km': (n,)} }
-            'stats'              : dict with 'time_with_any', 'avg_visible', 'per_sat_time', 'fraction_within'
-        """
-        if self.JD is None:
-            raise ValueError("Build the timebase and run the propagators before calling this plot.")
-        if gs_key not in self.ground_station_trajectories:
-            raise KeyError(f"Ground station '{gs_key}' not found")
-        if not sat_keys:
-            raise ValueError("sat_keys must be a non-empty list/tuple of satellite keys.")
-
-        sat_keys = list(sat_keys)
-        for sk in sat_keys:
-            if sk not in self.satellite_trajectories:
-                raise KeyError(f"Satellite '{sk}' not found")
-
-        gs_traj = self.ground_station_trajectories[gs_key]
-        jd = self.JD
-        n = jd.shape[0]
-        if n < 2:
-            raise ValueError("Timebase must contain at least two samples.")
-
-        # Interval durations (seconds) for duration-weighted stats
-        dt = np.diff(jd) * 86400.0
-        total_duration = float(np.sum(dt))
-        t_mid = 0.5 * (jd[:-1] + jd[1:])  # midpoints for interval plots
-
-        # ---- Per-satellite series ----
-        per_sat: dict[str, dict] = {}
-        elev_stack = []
-        dist_stack = []
-        vis_stack  = []
-
-        for sk in sat_keys:
-            sat_traj = self.satellite_trajectories[sk]
-            # Use your extended API: returns (az, el, vis, distance)
-            az_deg, el_deg, _, rng_km = self._compute_az_el(gs_traj, sat_traj, return_distance=True)
-            if el_deg.shape[0] != n or rng_km.shape[0] != n:
-                raise ValueError(f"Mismatched timebase for satellite '{sk}'.")
-
-            valid = np.isfinite(el_deg) & np.isfinite(rng_km)
-            vis_mask = (el_deg >= float(min_elev_deg)) & valid & (rng_km <= max_distance_km)
-
-            per_sat[sk] = {
-                "elevation_deg": el_deg.copy(),
-                "visible": vis_mask.copy(),
-                "distance_km": rng_km.copy(),
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        out : dict
+            {
+            'x': (n,),
+            'per_sat': {
+                sk: {
+                    'azimuth_deg': (n,),
+                    'elevation_deg': (n,),
+                    'range_km': (n,),
+                    'visible': (n,) bool
+                }, ...
+            },
+            'overall_visible': (n,) bool,
+            'overall_visible_pct': float in [0, 100],
+            'per_sat_visible_pct': { sk: float pct, ... },
+            'colours': { sk: RGBA, ... }
             }
-
-            elev_stack.append(el_deg)
-            dist_stack.append(rng_km)
-            vis_stack.append(vis_mask)
-
-        elev_stack = np.vstack(elev_stack)  # (S, n)
-        dist_stack = np.vstack(dist_stack)  # (S, n)
-        vis_stack  = np.vstack(vis_stack)   # (S, n)
-        S = len(sat_keys)
-
-        # ---- Visibility counts per interval ----
-        vis_intervals = vis_stack[:, :-1]                 # (S, n-1)
-        count_visible = np.sum(vis_intervals, axis=0)     # (n-1,)
-
-        # ---- Closest visible distance per sample ----
-        masked_dist = np.where(vis_stack, dist_stack, np.inf)  # (S, n)
-        min_dist = masked_dist.min(axis=0)                     # (n,)
-        has_any_visible = np.any(vis_stack, axis=0)            # (n,)
-        min_dist[~has_any_visible] = np.nan
-
-        # Which satellite was chosen (by index -> key)
-        chosen_idx = np.argmin(masked_dist, axis=0)            # (n,)
-        chosen_idx[~has_any_visible] = -1
-        chosen_sat = np.array([sat_keys[i] if i >= 0 else None for i in chosen_idx], dtype=object)
-
-        # ---- Stats ----
-        time_with_any = float(np.sum((count_visible > 0) * dt))
-        avg_visible = float(np.sum(count_visible * dt) / total_duration) if total_duration > 0 else 0.0
-        time_visible_per_sat = np.sum(vis_intervals * dt, axis=1)  # (S,)
-
-        fraction_within = None
-        if max_distance_km is not None and np.isfinite(max_distance_km):
-            # need interval alignment: evaluate min_dist on [i] for interval [i, i+1)
-            within = (has_any_visible[:-1]) & (min_dist[:-1] <= float(max_distance_km))
-            time_within = float(np.sum(dt[within]))
-            fraction_within = (time_within / total_duration) if total_duration > 0 else 0.0
-
-        # Log nicely
-        def _fmt_time(seconds: float) -> str:
-            if seconds < 120: return f"{seconds:.1f}s"
-            m = seconds / 60.0
-            if m < 120: return f"{m:.1f} min"
-            return f"{m/60.0:.2f} h"
-
-        print(f"[VIS STATS] Total duration: {_fmt_time(total_duration)}")
-        print(f"[VIS STATS] Time with ≥1 satellite: {_fmt_time(time_with_any)} "
-            f"({100.0 * time_with_any / total_duration:.2f}%)")
-        print(f"[VIS STATS] Average # visible: {avg_visible:.3f}")
-        for sk, tsec in zip(sat_keys, time_visible_per_sat):
-            print(f"[VIS STATS] {sk}: visible {_fmt_time(float(tsec))} "
-                f"({100.0 * float(tsec) / total_duration:.2f}%)")
-        if fraction_within is not None:
-            pct = 100.0 * fraction_within
-            print(f"[DIST STATS] Fraction of total time with a visible sat ≤ {max_distance_km:.1f} km: {pct:.2f}%")
-
-        # ---- Plot (3 rows) ----
-        fig, (ax1, ax3, ax2) = plt.subplots(
-            3, 1, figsize=fig_size, sharex=True,
-            gridspec_kw={"height_ratios": [3, 2, 3]}
+        """
+        # ---- 1) Compute all series + visibility ----
+        x, per_sat, overall_vis, per_sat_pct, overall_pct = self._compute_series_and_visibility(
+            gs_key=gs_key,
+            sat_keys=sat_keys,
+            min_elev_deg=min_elev_deg,
+            max_distance_km=max_distance_km,
         )
 
-        # Row 1: overlapping elevations
-        for sk in sat_keys:
-            ax1.plot(jd, per_sat[sk]["elevation_deg"], lw=1.0, label=sk)
-        ax1.axhline(min_elev_deg, linestyle="--", linewidth=1.0, color="black")
-        ax1.set_ylabel("Elevation [deg]")
-        ax1.set_title(f"Elevations of Satellites Over Time — (min elev {min_elev_deg:.1f}°)")
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(ncols=2, fontsize=8, loc="upper right")
+        # ---- 2) Colour map (persistent across calls) ----
+        colours = self._get_sat_color_map(list(per_sat.keys()))
 
-        # Row 2: visibility raster (interval-based)
-        vis_img = vis_intervals.astype(int)
-        ax2.imshow(vis_img, aspect="auto", interpolation="nearest",
-                extent=[jd[0], jd[-1], -0.5, S - 0.5])
-        ax2.set_yticks(range(S))
-        ax2.set_yticklabels(sat_keys)
-        ax2.set_ylabel("Satellite")
-        visible_pct = 100.0 * (time_with_any / total_duration) if total_duration > 0 else 0.0
-        ax2.set_title(f"Visible Intervals for Each Satellite: {visible_pct:.1f}% of time there is ≥1 satellites visible")
-        ax2.grid(False)
+        # ---- 3) Decide which panels to draw ----
+        panels = []
+        if show_azimuth:    panels.append("az")
+        if show_elevation:  panels.append("el")
+        if show_range:      panels.append("rng")
+        if show_visibility: panels.append("vis")
+        if not panels:
+            raise ValueError("At least one of the panels must be enabled.")
 
-        # Row 3: closest visible distance
-        if show_all_distances:
-            for sk in sat_keys:
-                ax3.plot(jd, per_sat[sk]["distance_km"], lw=0.8, alpha=0.35)
-        ax3.plot(jd, min_dist, lw=2.0, color="black", label="Closest visible")
-        if max_distance_km is not None and np.isfinite(max_distance_km):
-            ax3.axhline(max_distance_km, linestyle="--", linewidth=1.0, color="black")
-            if fraction_within is not None:
-                ax3.text(0.01, 0.95, f"≤ {max_distance_km:.0f} km for {100*fraction_within:.1f}% of time",
-                        transform=ax3.transAxes, va="top", ha="left", fontsize=9)
-        ax3.set_ylabel("Range [km]")
-        ax3.set_xlabel("Julian Date")
-        ax3.set_title("Distance to Closest Satellite")
-        ax3.grid(True, alpha=0.3)
+        fig, axes = plt.subplots(len(panels), 1, figsize=fig_size, sharex=True)
+        if len(panels) == 1:
+            axes = [axes]
+
+        # ---- 4) Draw subplots via helpers ----
+        idx = 0
+        if "az" in panels:
+            _subplot_azimuth(axes[idx], x, per_sat, colours, gs_key)
+            idx += 1
+        if "el" in panels:
+            _subplot_elevation(axes[idx], x, per_sat, colours, gs_key,
+                            min_elev_deg=min_elev_deg, max_elev_deg=max_elev_deg)
+            idx += 1
+        if "rng" in panels:
+            _subplot_range(axes[idx], x, per_sat, colours, gs_key,
+                        max_distance_km=max_distance_km)
+            idx += 1
+        if "vis" in panels:
+            _subplot_visibility(axes[idx], x, per_sat, colours, gs_key,
+                                overall_pct=overall_pct)
+            idx += 1
+
+        axes[-1].set_xlabel("Julian Date" if getattr(self, "JD", None) is not None else "Sample")
 
         fig.tight_layout()
         if save_plot_path:
@@ -870,22 +732,102 @@ class Simulator:
                 fig.savefig(save_plot_path, dpi=160, bbox_inches="tight")
             except Exception as exc:
                 print(f"[warn] could not save plot to '{save_plot_path}': {exc}")
-        plt.show()
 
-        return {
-            "jd": jd.copy(),
-            "count_visible": count_visible.astype(float),
-            "closest_visible_km": min_dist,
-            "chosen_sat": chosen_sat,
+        if block:
+            plt.show(block=True)
+
+        return fig, {
+            "x": x,
             "per_sat": per_sat,
-            "stats": {
-                "time_with_any": time_with_any,
-                "avg_visible": avg_visible,
-                "per_sat_time": {sk: float(t) for sk, t in zip(sat_keys, time_visible_per_sat)},
-                "fraction_within": fraction_within,
-                "total_duration": total_duration,
-            },
+            "overall_visible": overall_vis,
+            "overall_visible_pct": overall_pct,
+            "per_sat_visible_pct": per_sat_pct,
+            "colours": colours,
         }
+
+    def _compute_series_and_visibility(
+        self,
+        *,
+        gs_key: str,
+        sat_keys: list[str],
+        min_elev_deg: float,
+        max_distance_km: float | None,
+    ):
+        if gs_key not in self.ground_station_trajectories:
+            raise KeyError(f"Ground station '{gs_key}' not found.")
+        sat_keys = list(sat_keys)
+        if not sat_keys:
+            raise ValueError("sat_keys must be a non-empty iterable.")
+
+        for sk in sat_keys:
+            if sk not in self.satellite_trajectories:
+                raise KeyError(f"Satellite '{sk}' not found.")
+
+        gs_traj = self.ground_station_trajectories[gs_key]
+
+        # Use JD if available, else sample index after first compute
+        if getattr(self, "JD", None) is not None:
+            x = np.asarray(self.JD)
+        else:
+            x = None
+
+        per_sat: dict[str, dict[str, np.ndarray]] = {}
+        for sk in sat_keys:
+            sat_traj = self.satellite_trajectories[sk]
+            az_deg, el_deg, _, rng_km = az_el_sat_from_gs(gs_traj, sat_traj, return_distance=True)
+
+            if x is None:
+                x = np.arange(len(az_deg), dtype=float)
+
+            az = np.asarray(az_deg, dtype=float)
+            el = np.asarray(el_deg, dtype=float)
+            rn = np.asarray(rng_km, dtype=float)
+
+            # Visibility: elevation and range criteria
+            valid = np.isfinite(el) & np.isfinite(rn)
+            vis = valid & (el >= float(min_elev_deg))
+            if max_distance_km is not None and np.isfinite(max_distance_km):
+                vis &= (rn <= float(max_distance_km))
+
+            per_sat[sk] = {
+                "azimuth_deg": az,
+                "elevation_deg": el,
+                "range_km": rn,
+                "visible": vis.astype(bool),
+            }
+
+        # Overall visibility (any sat visible at each sample)
+        vis_stack = np.vstack([per_sat[sk]["visible"] for sk in sat_keys])  # (S, n)
+        overall_vis = np.any(vis_stack, axis=0)
+        n = overall_vis.size
+        overall_pct = 100.0 * float(np.count_nonzero(overall_vis)) / float(n) if n else 0.0
+
+        per_sat_pct = {
+            sk: 100.0 * float(np.count_nonzero(per_sat[sk]["visible"])) / float(n) if n else 0.0
+            for sk in sat_keys
+        }
+
+        return np.asarray(x, dtype=float), per_sat, overall_vis, per_sat_pct, overall_pct
+
+    def _get_sat_color_map(self, sat_keys: list[str]):
+        """
+        Returns a persistent colour map {sat_key: rgba}. New satellites encountered
+        are assigned the next colour from tab20 and stored on self for future calls.
+        """
+        if not hasattr(self, "_sat_color_map"):
+            self._sat_color_map = {}
+
+        cmap = plt.get_cmap("tab20")
+        # Start from how many we’ve already assigned
+        next_idx = len(self._sat_color_map)
+
+        for sk in sat_keys:
+            if sk not in self._sat_color_map:
+                self._sat_color_map[sk] = cmap(next_idx % 20)
+                next_idx += 1
+
+        # Return only the colours for requested satellites (preserving the map object)
+        return {sk: self._sat_color_map[sk] for sk in sat_keys}
 
     def plot_ground_tracks_window(self, gs_key: str, sat_keys: list[str],
                                 *, step: int = 1, figsize=(10, 6), block: bool = True,
@@ -1002,6 +944,74 @@ class Simulator:
         fig.tight_layout()
         plt.show(block=block)
         return fig
+
+def _subplot_azimuth(ax, x, per_sat, colours, gs_key: str):
+    for sk, series in per_sat.items():
+        ax.plot(x, series["azimuth_deg"], lw=1.0, color=colours[sk], label=sk)
+    ax.set_ylabel("Azimuth [deg]")
+    ax.set_title(f"Azimuth over Time from GS:{gs_key}")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="upper right")
+
+def _subplot_elevation(ax, x, per_sat, colours, gs_key: str, *, min_elev_deg: float, max_elev_deg: float | None):
+    for sk, series in per_sat.items():
+        ax.plot(x, series["elevation_deg"], lw=1.0, color=colours[sk], label=sk)
+    # Dotted reference lines
+    ax.axhline(float(min_elev_deg), linestyle="--", linewidth=1.0, color="black", label=f"min elev {min_elev_deg:g}°")
+    if max_elev_deg is not None and np.isfinite(max_elev_deg):
+        ax.axhline(float(max_elev_deg), linestyle="--", linewidth=1.0, color="grey", label=f"max elev {max_elev_deg:g}°")
+    ax.set_ylabel("Elevation [deg]")
+    ax.set_title(f"Elevation over Time from GS:{gs_key}")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="upper right")
+
+def _subplot_range(ax, x, per_sat, colours, gs_key: str, *, max_distance_km: float | None):
+    for sk, series in per_sat.items():
+        rng = series["range_km"]/1000
+        vis_mask = series["visible"]
+
+        rng_segmented = rng.copy()
+        not_rng_segmented = rng.copy()
+        for i in range(len(rng)):
+            if not vis_mask[i]:
+                # Segment NaN where not visible
+                rng_segmented[i] = np.nan
+            else:
+                not_rng_segmented[i] = np.nan
+
+        # Plot visible portions (full opacity)
+        ax.plot(x, rng_segmented,
+                lw=2.0, color=colours[sk], label=sk)
+
+        # Plot non-visible portions (faded)
+        ax.plot(x, not_rng_segmented,
+                lw=1.0, color=colours[sk], alpha=0.4)
+
+    if max_distance_km is not None and np.isfinite(max_distance_km):
+        ax.axhline(float(max_distance_km)/1000, linestyle="--", linewidth=1.0, color="black",
+                   label=f"max range {max_distance_km:g} km")
+
+    ax.set_ylabel("Range [km] 10^3")
+    ax.set_title(f"Range over Time from GS:{gs_key}")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="upper right")
+
+def _subplot_visibility(ax, x, per_sat, colours, gs_key: str, *, overall_pct: float):
+    # Raster: rows = satellites, columns = time samples, values = 0/1
+    sat_keys = list(per_sat.keys())
+    vis_stack = np.vstack([per_sat[sk]["visible"].astype(int) for sk in sat_keys])
+
+    ax.imshow(
+        vis_stack,
+        aspect="auto",
+        interpolation="nearest",
+        extent=[x[0], x[-1], -0.5, len(sat_keys) - 0.5],
+    )
+    ax.set_yticks(range(len(sat_keys)))
+    ax.set_yticklabels(sat_keys)
+    ax.set_ylabel("Satellite")
+    ax.set_title(f"Visibility (1 = visible) — any-visible: {overall_pct:.1f}% of samples")
+    # no grid for raster
 
 def _sky_series_for_plot(az_deg, el_deg, dist_km, *, min_elev_deg, distance_thresh_km):
         """

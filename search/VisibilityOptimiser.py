@@ -80,7 +80,7 @@ class VisibilityOptimiser:
                                        inc_deg=float(inc_deg),
                                        raan_deg=float(raan_deg),
                                        aop_deg=float(aop_deg),
-                                       tru_deg=float(ta_deg))
+                                       ta_deg=float(ta_deg))
         key = best["key"]
         self._add_sats({key: sat}, overwrite=True, drop_old_traj=True)
         # Propagate just this sat and the GS
@@ -144,7 +144,7 @@ class VisibilityOptimiser:
             inc_deg=inc_use,
             raan_deg=float(raan_deg),
             aop_deg=(float(aop_deg) % 360.0),
-            tru_deg=float(ta_deg),
+            ta=float(ta_deg),
         )
 
         # Add to sim

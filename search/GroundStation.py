@@ -1,6 +1,6 @@
 import numpy as np
-from helper_constants import *
-from helper_coordinate_transforms import geodetic_to_ecef, enu_matrix
+from helper.constants import *
+from helper.coordinate_transforms import geodetic_to_ecef, enu_matrix
 
 # ----------------- GroundStation -----------------
 class GroundStation:

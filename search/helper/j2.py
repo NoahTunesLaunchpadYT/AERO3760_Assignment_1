@@ -1,5 +1,5 @@
 import numpy as np
-from helper_constants import *
+from helper.constants import *
 
 # ---------- Dynamics ----------
 def accel_two_body_j2(r_eci, mu=MU_EARTH, Re=R_EARTH, j2=J2):

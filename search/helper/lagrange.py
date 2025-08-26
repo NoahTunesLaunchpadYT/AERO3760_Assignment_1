@@ -1,5 +1,48 @@
 import numpy as np
 
+def lagrange_coefficients_universal(
+    r1: np.ndarray,
+    r2: np.ndarray,
+    mu: float,
+    z: float,
+    is_prograde: bool
+) -> tuple:
+    """_summary_
+
+    Args:
+        r1 (np.ndarray): _description_
+        r2 (np.ndarray): _description_
+        mu (float): _description_
+        z (float): _description_
+        is_prograde (bool): _description_
+
+    Returns:
+        tuple: _description_
+    """
+    r1_mag = np.linalg.norm(r1)
+    r2_mag = np.linalg.norm(r2)
+
+    # -------------------- Find the change in true anomaly from r1 to r2
+    norm_vec = np.cross(r1, r2)     # Vector normal to the orbital plane
+
+    if (is_prograde and norm_vec[2] >= 0) or (not is_prograde and norm_vec[2] < 0):
+        delta_theta = np.arccos(np.clip(np.dot(r1, r2) / (r1_mag * r2_mag), -1.0, 1.0)) 
+    else:
+        delta_theta = 2 * np.pi - np.arccos(np.clip(np.dot(r1, r2) / (r1_mag * r2_mag), -1.0, 1.0))
+    
+    # -------------------- Calculate the Lagrange Coefficients
+    Sz = stumpff_S(z)
+    Cz = stumpff_C(z)
+
+    A = np.sin(delta_theta) * np.sqrt(r1_mag * r2_mag / (1 - np.cos(delta_theta)))
+    y = r1_mag + r2_mag + A * np.sqrt((z*Sz - 1) / np.sqrt(Cz))
+
+    f = 1 - y / r1_mag
+    g = A * np.sqrt(y) / np.sqrt(mu)
+    fdot = np.sqrt(mu) / (r1_mag * r2_mag) * np.sqrt(y / Cz) * (z * Sz - 1)
+    gdot = 1 - y / r2_mag
+
+    return f, g, fdot, gdot
 
 def stumpff_S(z: float) -> float:
     """Calculates the Stumpff function S(z)
@@ -94,7 +137,7 @@ def universal_variable_from_r(
         y = y_func(z)
 
         if z == 0:
-            return np.sqrt(2) / 40 * y(0)**(3/2) + (A/8)*(np.sqrt(y(0)) + A * np.sqrt(1/(2*np.sqrt(y(0)))))
+            return np.sqrt(2) / 40 * y**(3/2) + (A/8)*(np.sqrt(y) + A * np.sqrt(1/(2*np.sqrt(y))))
         else:
             return (y / Cz) ** (3/2) * (1 / 2*z * (Cz - 3/2 * Sz/Cz) + 3/4 * Sz**2/Cz) + A/8 * (3 * Sz/Cz * np.sqrt(y) + A * np.sqrt(Cz / y))
 

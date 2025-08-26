@@ -8,9 +8,9 @@ from scipy.integrate import solve_ivp
 # - geodetic_to_ecef(lat_deg, lon_deg, h_m) -> (3,) km
 # - gmst_from_jd(jd) -> radians
 # - enu_matrix(lat_deg, lon_deg) -> 3x3 (rows E,N,U)
-from helper_j2 import rhs_j2
-from helper_time import gmst_from_jd
-from helper_coordinate_transforms import geodetic_to_eci, enu_matrix
+from helper.j2 import rhs_j2
+from helper.time import gmst_from_jd
+from helper.coordinate_transforms import geodetic_to_eci, enu_matrix
 
 
 # ----------------- Abstract Propagator -----------------

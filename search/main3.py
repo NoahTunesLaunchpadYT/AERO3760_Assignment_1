@@ -20,7 +20,7 @@ def main():
     s = 0.0
 
     min_elev_deg = 30.0
-    max_distance = 7500.0
+    max_distance_km = 7500.0
 
     e=0.0
     a_km=11504
@@ -146,22 +146,23 @@ def main():
     # ==============================
 
     sim.plot_ground_tracks_window(gs_key="Sydney", sat_keys=[sat_keys[0]], r=31, step=1)
-    res_dict = sim.plot_elevation_visibility_distance(
+    res_dict = sim.plot_sat_az_el_rng_vis(
         gs_key="Sydney",
         sat_keys=sat_keys,
         min_elev_deg=min_elev_deg,
-        max_distance_km=max_distance
+        max_distance_km=max_distance_km,
+        show_azimuth=False,
+        show_elevation=True,
+        show_range=True,
+        show_visibility=True,
     )
-
-    mask = res_dict["per_sat"]["sat00"]["visible"]
-    np.save("mask.npy", mask)
 
     sim.plot_all_five(
         gs_key="Sydney",
         sat_keys=sat_keys,
         step=10,
         min_elev_deg=min_elev_deg,
-        distance_thresh_km=max_distance
+        distance_thresh_km=max_distance_km
     )
 
 if __name__ == "__main__":
