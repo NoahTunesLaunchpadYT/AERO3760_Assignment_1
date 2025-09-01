@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from OrbitDetermination import SatelliteLaserRanging, RadiometricTracking, OpticalTracking, OrbitDeterminationSolver
 
+# Treat warnings as errors
+import warnings
+warnings.simplefilter("error", RuntimeWarning)
+
 # Types
 ErrorType = Literal["angular", "temporal", "range"]
 MethodType = Literal["Gibbs", "Lambert", "Gauss"]

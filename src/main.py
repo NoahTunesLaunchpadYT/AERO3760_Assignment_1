@@ -14,10 +14,6 @@ from helper.time import *
 from OrbitDetermination import OrbitDeterminationSolver
 from SensitivityAnalyser import SensitivityAnalyser
 
-# Treat warnings as errors
-import warnings
-warnings.simplefilter("error", RuntimeWarning)
-
 def question_1(sim: Simulator, 
                min_elev_deg: float, 
                max_distance_km: float):

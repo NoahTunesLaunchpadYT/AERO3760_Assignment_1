@@ -1002,6 +1002,8 @@ class Simulator:
         return fig
 
 def _subplot_azimuth(ax, x, per_sat, colours, gs_key: str):
+    """Plot azimuth over time for each satellite.
+    """    
     for sk, series in per_sat.items():
         ax.plot(x, series["azimuth_deg"], lw=1.0, color=colours[sk], label=sk)
     ax.set_ylabel("Azimuth [deg]")
@@ -1010,6 +1012,9 @@ def _subplot_azimuth(ax, x, per_sat, colours, gs_key: str):
     ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="upper right")
 
 def _subplot_elevation(ax, x, per_sat, colours, gs_key: str, *, min_elev_deg: float, max_elev_deg: float | None):
+    """
+    Plot elevation over time for each satellite.
+    """
     for sk, series in per_sat.items():
         ax.plot(x, series["elevation_deg"], lw=1.0, color=colours[sk], label=sk)
     # Dotted reference lines
@@ -1022,6 +1027,9 @@ def _subplot_elevation(ax, x, per_sat, colours, gs_key: str, *, min_elev_deg: fl
     ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="lower right")
 
 def _subplot_range(ax, x, per_sat, colours, gs_key: str, *, max_distance_km: float | None):
+    """
+    Plot range over time for each satellite.
+    """
     for sk, series in per_sat.items():
         rng = series["range_km"]/1000
         vis_mask = series["visible"]
@@ -1053,6 +1061,9 @@ def _subplot_range(ax, x, per_sat, colours, gs_key: str, *, max_distance_km: flo
     ax.legend(fontsize=8, ncols=min(3, len(per_sat)), loc="upper right")
 
 def _subplot_visibility(ax, x, per_sat, colours, gs_key: str, *, overall_pct: float):
+    """
+    Plot visibility over time for each satellite.
+    """
     # Raster: rows = satellites, columns = time samples, values = 0/1
     sat_keys = list(per_sat.keys())
     vis_stack = np.vstack([per_sat[sk]["visible"].astype(int) for sk in sat_keys])
@@ -1069,36 +1080,36 @@ def _subplot_visibility(ax, x, per_sat, colours, gs_key: str, *, overall_pct: fl
     ax.set_title(f"Visibility: {overall_pct:.1f}% of the time")
 
 def _sky_series_for_plot(az_deg, el_deg, dist_km, *, min_elev_deg, distance_thresh_km):
-        """
-        Build sky-track series for polar plotting.
-        Returns theta_solid, r_solid, theta_dotted, r_dotted, vis_mask, theta_raw, r_raw
-        where:
-        - solid = visible AND dist <= threshold
-        - dotted = visible AND dist  > threshold
-        Segmentation (NaN) applied ONLY where not visible (el < min_elev_deg).
-        No NaNs added for azimuth wraps.
-        """
-        az_deg = np.asarray(az_deg)
-        el_deg = np.asarray(el_deg)
-        dist_km = np.asarray(dist_km)
+    """
+    Build sky-track series for polar plotting.
+    Returns theta_solid, r_solid, theta_dotted, r_dotted, vis_mask, theta_raw, r_raw
+    where:
+    - solid = visible AND dist <= threshold
+    - dotted = visible AND dist  > threshold
+    Segmentation (NaN) applied ONLY where not visible (el < min_elev_deg).
+    No NaNs added for azimuth wraps.
+    """
+    az_deg = np.asarray(az_deg)
+    el_deg = np.asarray(el_deg)
+    dist_km = np.asarray(dist_km)
 
-        # polar: theta in radians, radius as elevation (0 at centre = zenith, but we'll invert r-limits)
-        theta = np.deg2rad(az_deg)
-        r = el_deg
+    # polar: theta in radians, radius as elevation (0 at centre = zenith, but we'll invert r-limits)
+    theta = np.deg2rad(az_deg)
+    r = el_deg
 
-        visible = np.isfinite(el_deg) & (el_deg >= float(min_elev_deg))
-        near = visible & (dist_km <= float(distance_thresh_km))
-        far  = visible & (dist_km >  float(distance_thresh_km))
+    visible = np.isfinite(el_deg) & (el_deg >= float(min_elev_deg))
+    near = visible & (dist_km <= float(distance_thresh_km))
+    far  = visible & (dist_km >  float(distance_thresh_km))
 
-        # Apply NaN ONLY where not visible
-        theta_solid = theta.copy()
-        r_solid = r.copy()
-        theta_solid[~near] = np.nan
-        r_solid[~near] = np.nan
+    # Apply NaN ONLY where not visible
+    theta_solid = theta.copy()
+    r_solid = r.copy()
+    theta_solid[~near] = np.nan
+    r_solid[~near] = np.nan
 
-        theta_dotted = theta.copy()
-        r_dotted = r.copy()
-        theta_dotted[~far] = np.nan
-        r_dotted[~far] = np.nan
+    theta_dotted = theta.copy()
+    r_dotted = r.copy()
+    theta_dotted[~far] = np.nan
+    r_dotted[~far] = np.nan
 
-        return theta_solid, r_solid, theta_dotted, r_dotted, visible, theta, r
+    return theta_solid, r_solid, theta_dotted, r_dotted, visible, theta, r
