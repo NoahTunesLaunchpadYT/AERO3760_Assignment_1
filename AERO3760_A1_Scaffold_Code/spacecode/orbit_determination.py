@@ -106,7 +106,11 @@ def lambert(
         Tuple[np.ndarray, np.ndarray]: The velocity vectors at r1 and r2.
     """
     z = universal_variable_from_r(r1, r2, dt, mu, is_prograde)
-    f, g, fdot, gdot = lagrange_coefficients_universal(r1, r2, mu, z, is_prograde)
+    result = lagrange_coefficients_universal(r1, r2, mu, z, is_prograde)
+    if result is None:
+        return None
+
+    f, g, fdot, gdot = result
 
     v1 = 1 / g * (r2 - f * r1)
     v2 = 1 / g * (gdot * r2 - r1)
